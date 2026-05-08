@@ -1,0 +1,29 @@
+superpoint:
+  max_keypoints: 2000
+  keypoint_threshold: 0.01
+  remove_borders: 4
+  input_tensor_names:
+    - "image"
+  output_tensor_names:
+    - "scores"
+    - "descriptors"
+  onnx_file: "superpoint_v1.onnx"
+  engine_file: "superpoint_v1.engine"
+  dla_core: -1
+
+superpoint_lightglue:
+  image_width: 320
+  image_height: 240
+  filter_threshold: 0.1
+  depth_confidence: -1
+  width_confidence: -1
+  input_tensor_names:
+    - "keypoints0"
+    - "keypoints1"
+    - "descriptors0"
+    - "descriptors1"
+  output_tensor_names:
+    - "scores"
+  onnx_file: "superpoint_lightglue.onnx"
+  engine_file: "superpoint_lightglue.engine"
+  dla_core: -1
