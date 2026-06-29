@@ -1,0 +1,21 @@
+<launch>
+  <node pkg="two_stream" type="ros_yolo_node" name="ros_yolo_node" output="screen">
+    <param name="use_gpu" value="true"/>
+    <param name="show_window" value="true"/>
+
+    <param name="model_path" value="$(find two_stream)/models/best.onnx"/>
+    <param name="class_names_path" value="$(find two_stream)/models/llvip.names"/>
+
+    <param name="config_path" value="$(find two_stream)/config/config.yaml"/>
+    <param name="model_dir" value="$(find two_stream)/weights"/>
+
+    <param name="rgb_topic" value="/camera/color/image_raw"/>
+    <param name="ir_topic" value="/pub_ir"/>
+    <param name="output_topic" value="/two_stream/image_annotated"/>
+
+    <param name="input_width" value="640"/>
+    <param name="input_height" value="640"/>
+    <param name="conf_threshold" value="0.30"/>
+    <param name="iou_threshold" value="0.40"/>
+  </node>
+</launch>
