@@ -38,6 +38,8 @@ private:
                                  float& bestConf,
                                  int& bestClassId);
 
+    std::vector<std::string> inputNameStrings;
+    std::vector<std::string> outputNameStrings;
     std::vector<const char*> inputNames;
     std::vector<const char*> outputNames;
     bool isDynamicInputShape{};

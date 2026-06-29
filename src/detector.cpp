@@ -90,15 +90,28 @@ YoloDetector::YoloDetector(const std::string& modelPath,
         std::cout << "Input shape: " << shape << std::endl;
     }
 
+    inputNameStrings.clear();
+    outputNameStrings.clear();
+    inputNames.clear();
+    outputNames.clear();
+    inputNameStrings.reserve(inputCount);
+    outputNameStrings.reserve(outputCount);
+    inputNames.reserve(inputCount);
+    outputNames.reserve(outputCount);
+
     for (size_t i = 0; i < inputCount; ++i)
     {
-        inputNames.push_back(session.GetInputName(i, allocator));
+        auto inputName = session.GetInputNameAllocated(i, allocator);
+        inputNameStrings.emplace_back(inputName.get());
+        inputNames.push_back(inputNameStrings.back().c_str());
         std::cout << "Input[" << i << "] name: " << inputNames.back() << std::endl;
     }
 
     for (size_t i = 0; i < outputCount; ++i)
     {
-        outputNames.push_back(session.GetOutputName(i, allocator));
+        auto outputName = session.GetOutputNameAllocated(i, allocator);
+        outputNameStrings.emplace_back(outputName.get());
+        outputNames.push_back(outputNameStrings.back().c_str());
         std::cout << "Output[" << i << "] name: " << outputNames.back() << std::endl;
     }
 

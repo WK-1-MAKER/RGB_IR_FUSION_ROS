@@ -4,9 +4,9 @@ project(two_stream)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(ONNXRUNTIME_DIR "/home/wk/3rd/onnxruntime-linux-x64-gpu-1.10.0" CACHE PATH "Path to ONNX Runtime root directory" FORCE)
+set(ONNXRUNTIME_DIR "/home/SENSETIME/wenkai/3rd/onnxruntime-linux-x64-gpu-1.18.0" CACHE PATH "Path to ONNX Runtime root directory" FORCE)
 message(STATUS "ONNXRUNTIME_DIR: ${ONNXRUNTIME_DIR}")
-set(TENSORRT_ROOT "/home/wk/3rd/TensorRT-8.6.1.6" CACHE PATH "Path to TensorRT root directory")
+set(TENSORRT_ROOT "/home/SENSETIME/wenkai/3rd/TensorRT-8.6.1.6" CACHE PATH "Path to TensorRT root directory")
 set(TENSORRT_INCLUDE_DIR "${TENSORRT_ROOT}/include")
 set(TENSORRT_LIB_DIR "${TENSORRT_ROOT}/lib")
 set(TENSORRT_TARGET_LIB_DIR "${TENSORRT_ROOT}/targets/x86_64-linux-gnu/lib")
@@ -29,7 +29,7 @@ find_package(CUDA REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 find_library(ONNXRUNTIME_LIB
-  NAMES onnxruntime libonnxruntime.so libonnxruntime.so.1.10.0
+  NAMES onnxruntime libonnxruntime.so libonnxruntime.so.1.18.0
   PATHS ${ONNXRUNTIME_DIR}/lib
   NO_DEFAULT_PATH
 )

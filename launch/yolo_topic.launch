@@ -1,5 +1,5 @@
 <launch>
-  <env name="LD_LIBRARY_PATH" value="/home/wk/3rd/TensorRT-8.6.1.6/lib:/home/wk/3rd/TensorRT-8.6.1.6/targets/x86_64-linux-gnu/lib:/home/wk/3rd/onnxruntime-linux-x64-gpu-1.10.0/lib:$(optenv LD_LIBRARY_PATH)"/>
+  <env name="LD_LIBRARY_PATH" value="/home/SENSETIME/wenkai/3rd/TensorRT-8.6.1.6/lib:/home/SENSETIME/wenkai/3rd/TensorRT-8.6.1.6/targets/x86_64-linux-gnu/lib:/home/SENSETIME/wenkai/3rd/onnxruntime-linux-x64-gpu-1.18.0/lib:$(optenv LD_LIBRARY_PATH)"/>
   <node pkg="two_stream" type="ros_yolo_node" name="ros_yolo_node" output="screen">
     <param name="use_gpu" value="true"/>
     <param name="show_window" value="true"/>
