@@ -62,3 +62,8 @@ roslaunch two_stream yolo_topic.launch \
 
 - 节点使用“当前 RGB 帧 + 最新缓存 IR 帧”进行推理（未启用严格时间同步）。
 - 如果暂时没有收到 IR 帧，RGB 帧会被跳过。
+
+## onnxruntime版本和tensorrt版本
+- onnxruntime-gpu-1.18.0
+- tensorrt-8.6.1.6
+- CUDA-11.8
