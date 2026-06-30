@@ -5,6 +5,8 @@
 
 #include <iostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "utils.h"
 
@@ -56,6 +58,69 @@ inline std::string RequireStringValue(const YAML::Node &parent,
   return value;
 }
 
+inline std::vector<double> RequireDoubleListExact(const YAML::Node &parent,
+                                                  const std::string &key,
+                                                  const std::string &context,
+                                                  size_t expected_count) {
+  const YAML::Node node = RequireNode(parent, key, context);
+  if (!node.IsSequence()) {
+    throw std::runtime_error("Config key '" + key + "' in " + context +
+                             " must be a sequence");
+  }
+
+  if (node.size() != expected_count) {
+    throw std::runtime_error("Config key '" + key + "' in " + context +
+                             " must contain exactly " +
+                             std::to_string(expected_count) + " item(s)");
+  }
+
+  std::vector<double> values;
+  values.reserve(node.size());
+  for (size_t i = 0; i < node.size(); ++i) {
+    values.push_back(node[i].as<double>());
+  }
+  return values;
+}
+
+inline std::vector<double> RequireDoubleMatrix3x3(const YAML::Node &parent,
+                                                  const std::string &key,
+                                                  const std::string &context) {
+  const YAML::Node node = RequireNode(parent, key, context);
+  if (!node.IsSequence()) {
+    throw std::runtime_error("Config key '" + key + "' in " + context +
+                             " must be a 3x3 sequence");
+  }
+
+  if (node.size() == 9) {
+    std::vector<double> values;
+    values.reserve(9);
+    for (size_t i = 0; i < node.size(); ++i) {
+      values.push_back(node[i].as<double>());
+    }
+    return values;
+  }
+
+  if (node.size() == 3) {
+    std::vector<double> values;
+    values.reserve(9);
+    for (size_t row = 0; row < node.size(); ++row) {
+      const YAML::Node row_node = node[row];
+      if (!row_node.IsSequence() || row_node.size() != 3) {
+        throw std::runtime_error("Config key '" + key + "' row " +
+                                 std::to_string(row) + " in " + context +
+                                 " must contain exactly 3 item(s)");
+      }
+      for (size_t col = 0; col < row_node.size(); ++col) {
+        values.push_back(row_node[col].as<double>());
+      }
+    }
+    return values;
+  }
+
+  throw std::runtime_error("Config key '" + key + "' in " + context +
+                           " must contain exactly 9 item(s) or 3 row(s)");
+}
+
 }  // namespace read_config_detail
 
 struct SuperPointConfig {
@@ -82,11 +147,24 @@ struct SuperPointLightGlueConfig {
   std::string engine_file;
 };
 
+struct CameraConfig {
+  std::vector<double> intrinsic;
+  std::vector<double> distortion;
+  std::vector<double> rotation;
+  std::vector<double> translation;
+};
+
+struct CameraCalibrationConfig {
+  CameraConfig rgb;
+  CameraConfig ir;
+};
+
 struct Configs {
   std::string model_dir;
 
   SuperPointConfig superpoint_config;
   SuperPointLightGlueConfig superpoint_lightglue_config;
+  CameraCalibrationConfig camera_config;
 
   Configs(const std::string &config_file, const std::string &model_dir) {
     std::cout << "Config file is " << config_file << std::endl;
@@ -175,6 +253,39 @@ struct Configs {
           ConcatenateFolderAndFileName(model_dir, lightglue_onnx_file);
       superpoint_lightglue_config.engine_file =
           ConcatenateFolderAndFileName(model_dir, lightglue_engine_file);
+
+      YAML::Node cameras_node =
+          read_config_detail::RequireNode(file_node, "cameras", "root config");
+      YAML::Node rgb_node =
+          read_config_detail::RequireNode(cameras_node, "rgb", "cameras");
+      YAML::Node ir_node =
+          read_config_detail::RequireNode(cameras_node, "ir", "cameras");
+
+      camera_config.rgb.intrinsic =
+          read_config_detail::RequireDoubleMatrix3x3(rgb_node, "intrinsic",
+                                                     "cameras.rgb");
+      camera_config.rgb.distortion =
+          read_config_detail::RequireDoubleListExact(rgb_node, "distortion",
+                                                     "cameras.rgb", 5);
+      camera_config.rgb.rotation =
+          read_config_detail::RequireDoubleMatrix3x3(rgb_node, "rotation",
+                                                     "cameras.rgb");
+      camera_config.rgb.translation =
+          read_config_detail::RequireDoubleListExact(rgb_node, "translation",
+                                                     "cameras.rgb", 3);
+
+      camera_config.ir.intrinsic =
+          read_config_detail::RequireDoubleMatrix3x3(ir_node, "intrinsic",
+                                                     "cameras.ir");
+      camera_config.ir.distortion =
+          read_config_detail::RequireDoubleListExact(ir_node, "distortion",
+                                                     "cameras.ir", 5);
+      camera_config.ir.rotation =
+          read_config_detail::RequireDoubleMatrix3x3(ir_node, "rotation",
+                                                     "cameras.ir");
+      camera_config.ir.translation =
+          read_config_detail::RequireDoubleListExact(ir_node, "translation",
+                                                     "cameras.ir", 3);
     } catch (const YAML::Exception &e) {
       throw std::runtime_error("Invalid config file '" + config_file +
                                "': " + e.what());

@@ -139,4 +139,18 @@ if(CATKIN_ENABLE_TESTING)
       gtest_main
     )
   endif()
+
+  catkin_add_gtest(test_read_config
+    tests/test_read_config.cpp
+  )
+  if(TARGET test_read_config)
+    target_compile_definitions(test_read_config
+      PRIVATE TWO_STREAM_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_read_config
+      ${OpenCV_LIBS}
+      yaml-cpp
+      gtest_main
+    )
+  endif()
 endif()

@@ -32,6 +32,7 @@ public:
 
 private:
     static cv::Mat toBgrImage(const sensor_msgs::ImageConstPtr& msg);
+    void loadCameraCalibration();
     void compute_H();
     void compute_F();
     void updateRectification(const cv::Size& imageSize);
@@ -88,21 +89,23 @@ private:
     std::string model_dir_;
     std::unique_ptr<Configs> configs_;
 
-    cv::Matx33d kRgb_ = cv::Matx33d(606.97900390625, 0.0, 320.3143615722656,
-                        0.0, 607.1318359375, 247.97427368164062,
-                        0.0, 0.0, 1.0);
-    cv::Matx33d kIr_ = cv::Matx33d(593.946114205786, 0.0, 322.242307522658,
-                        0.0, 592.545920338569, 264.298408236226,
-                        0.0, 0.0, 1.0);
-    cv::Matx33d r_ = cv::Matx33d::eye();
-    cv::Vec3d t_ = cv::Vec3d(-0.036, 0.03, -0.009);
+    cv::Matx33d kRgb_;
+    cv::Matx33d kIr_;
+    cv::Mat distRgb_;
+    cv::Mat distIr_;
+    cv::Matx33d rRgbWorld_;
+    cv::Matx33d rIrWorld_;
+    cv::Vec3d tRgbWorld_;
+    cv::Vec3d tIrWorld_;
+    cv::Matx33d r_;
+    cv::Vec3d t_;
     cv::Matx33d H_;
     cv::Matx33d F_;
 
-    cv::Matx33d kRgbTri_ = kRgb_;
-    cv::Matx33d kIrTri_ = kIr_;
-    cv::Matx33d rTri_ = r_;
-    cv::Vec3d tTri_ = t_;
+    cv::Matx33d kRgbTri_;
+    cv::Matx33d kIrTri_;
+    cv::Matx33d rTri_;
+    cv::Vec3d tTri_;
 
     cv::Matx33d rRectRgb_ = cv::Matx33d::eye();
     cv::Matx33d rRectIr_ = cv::Matx33d::eye();

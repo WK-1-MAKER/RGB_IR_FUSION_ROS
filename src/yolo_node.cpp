@@ -22,6 +22,38 @@ struct TriangulatedSample
     double reprojectionError;
 };
 
+cv::Matx33d matx33FromVector(const std::vector<double>& values)
+{
+    if (values.size() != 9)
+    {
+        throw std::runtime_error("Camera matrix must contain exactly 9 values.");
+    }
+
+    return cv::Matx33d(values[0], values[1], values[2],
+                      values[3], values[4], values[5],
+                      values[6], values[7], values[8]);
+}
+
+cv::Vec3d vec3FromVector(const std::vector<double>& values)
+{
+    if (values.size() != 3)
+    {
+        throw std::runtime_error("Camera translation must contain exactly 3 values.");
+    }
+
+    return cv::Vec3d(values[0], values[1], values[2]);
+}
+
+cv::Mat distortionFromVector(const std::vector<double>& values)
+{
+    if (values.size() != 5)
+    {
+        throw std::runtime_error("Camera distortion must contain exactly 5 values.");
+    }
+
+    return (cv::Mat_<double>(1, 5) << values[0], values[1], values[2], values[3], values[4]);
+}
+
 std::vector<double> computeSoftmaxWeights(const std::vector<TriangulatedSample>& samples,
                                           const std::vector<int>& indices,
                                           double temperature = 1.0)
@@ -244,6 +276,8 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     pnh_.param<std::string>("config_path", config_path_, "");
     pnh_.param<std::string>("model_dir", model_dir_, "");
 
+    configs_ = std::make_unique<Configs>(config_path_, model_dir_);
+    loadCameraCalibration();
     compute_H();
     compute_F();
 
@@ -262,7 +296,6 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     detector_ = std::make_unique<YoloDetector>(modelPath_, useGPU_, cv::Size(inputWidth, inputHeight));
     imagePub_ = it_.advertise(outputTopic_, 1);
 
-    configs_ = std::make_unique<Configs>(config_path_, model_dir_);
     superpoint_ = std::make_shared<SuperPoint>(configs_->superpoint_config);
     superpointLightglue_ = std::make_shared<SuperPointLightGlue>(configs_->superpoint_lightglue_config);
 
@@ -285,6 +318,32 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     ROS_INFO_STREAM("ros_yolo subscribed RGB: " << rgbTopic_);
     ROS_INFO_STREAM("ros_yolo subscribed IR : " << irTopic_);
     ROS_INFO_STREAM("ros_yolo output topic  : " << outputTopic_);
+}
+
+void YoloNode::loadCameraCalibration()
+{
+    if (!configs_)
+    {
+        throw std::runtime_error("Cannot load camera calibration before config is initialized.");
+    }
+
+    const CameraCalibrationConfig& cameraConfig = configs_->camera_config;
+    kRgb_ = matx33FromVector(cameraConfig.rgb.intrinsic);
+    kIr_ = matx33FromVector(cameraConfig.ir.intrinsic);
+    distRgb_ = distortionFromVector(cameraConfig.rgb.distortion);
+    distIr_ = distortionFromVector(cameraConfig.ir.distortion);
+    rRgbWorld_ = matx33FromVector(cameraConfig.rgb.rotation);
+    rIrWorld_ = matx33FromVector(cameraConfig.ir.rotation);
+    tRgbWorld_ = vec3FromVector(cameraConfig.rgb.translation);
+    tIrWorld_ = vec3FromVector(cameraConfig.ir.translation);
+
+    r_ = rIrWorld_ * rRgbWorld_.t();
+    t_ = tIrWorld_ - r_ * tRgbWorld_;
+
+    kRgbTri_ = kRgb_;
+    kIrTri_ = kIr_;
+    rTri_ = r_;
+    tTri_ = t_;
 }
 
 cv::Mat YoloNode::toBgrImage(const sensor_msgs::ImageConstPtr& msg)
@@ -501,6 +560,13 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
         ROS_WARN("Received empty IR image frame.");
         return;
     }
+
+    cv::Mat rgbUndistorted;
+    cv::Mat irUndistorted;
+    cv::undistort(rgbImage, rgbUndistorted, cv::Mat(kRgb_), distRgb_, cv::Mat(kRgb_));
+    cv::undistort(irImage, irUndistorted, cv::Mat(kIr_), distIr_, cv::Mat(kIr_));
+    rgbImage = rgbUndistorted;
+    irImage = irUndistorted;
 
     const double stampDeltaSec = std::abs((rgbMsg->header.stamp - irMsg->header.stamp).toSec());
     //std::cout << "RGB-IR timestamp delta: " << stampDeltaSec * 1000.0 << " ms" << std::endl;

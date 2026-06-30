@@ -27,3 +27,25 @@ superpoint_lightglue:
   onnx_file: "superpoint_lightglue.onnx"
   engine_file: "superpoint_lightglue.engine"
   dla_core: -1
+
+# Camera extrinsics use world_to_camera:
+# X_camera = R_world_to_camera * X_world + t_world_to_camera
+cameras:
+  rgb:
+    intrinsic: [606.97900390625, 0.0, 320.3143615722656,
+                0.0, 607.1318359375, 247.97427368164062,
+                0.0, 0.0, 1.0]
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
+    translation: [0.0, 0.0, 0.0]
+  ir:
+    intrinsic: [593.946114205786, 0.0, 322.242307522658,
+                0.0, 592.545920338569, 264.298408236226,
+                0.0, 0.0, 1.0]
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
+    translation: [-0.036, 0.03, -0.009]
