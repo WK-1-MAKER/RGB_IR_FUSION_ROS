@@ -93,12 +93,16 @@ private:
     cv::Matx33d kIr_;
     cv::Mat distRgb_;
     cv::Mat distIr_;
-    cv::Matx33d rRgbWorld_;
-    cv::Matx33d rIrWorld_;
-    cv::Vec3d tRgbWorld_;
-    cv::Vec3d tIrWorld_;
-    cv::Matx33d r_;
-    cv::Vec3d t_;
+    cv::Matx33d rBodyRgb_;
+    cv::Matx33d rBodyIr_;
+    cv::Vec3d tBodyRgb_;
+    cv::Vec3d tBodyIr_;
+    cv::Matx33d rRgbBody_;
+    cv::Matx33d rIrBody_;
+    cv::Vec3d tRgbBody_;
+    cv::Vec3d tIrBody_;
+    cv::Matx33d rIrRgb_;
+    cv::Vec3d tIrRgb_;
     cv::Matx33d H_;
     cv::Matx33d F_;
 

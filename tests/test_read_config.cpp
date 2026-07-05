@@ -59,7 +59,7 @@ cameras:
     rotation: [1.0, 0.0, 0.0,
                0.0, 1.0, 0.0,
                0.0, 0.0, 1.0]
-    translation: [-0.036, 0.03, -0.009]
+    translation: [0.036, -0.03, 0.009]
 )yaml");
 
     const Configs configs(kConfigPath, "/tmp/models");
@@ -70,9 +70,9 @@ cameras:
     ASSERT_EQ(configs.camera_config.rgb.translation.size(), 3u);
     EXPECT_DOUBLE_EQ(configs.camera_config.rgb.intrinsic[0], 606.97900390625);
     EXPECT_DOUBLE_EQ(configs.camera_config.ir.intrinsic[0], 593.946114205786);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[0], -0.036);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[1], 0.03);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[2], -0.009);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[0], 0.036);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[1], -0.03);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[2], 0.009);
 }
 
 TEST(ReadConfigTest, RejectsWrongCameraMatrixLength)
@@ -116,7 +116,7 @@ cameras:
     rotation: [1.0, 0.0, 0.0,
                0.0, 1.0, 0.0,
                0.0, 0.0, 1.0]
-    translation: [-0.036, 0.03, -0.009]
+    translation: [0.036, -0.03, 0.009]
 )yaml");
 
     EXPECT_THROW(
@@ -141,7 +141,7 @@ TEST(ReadConfigTest, PackageConfigContainsCameraCalibration)
     EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[0], 0.0);
     EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[1], 0.0);
     EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[2], 0.0);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[0], -0.036);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[1], 0.03);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[2], -0.009);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[0], 0.036);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[1], -0.03);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[2], 0.009);
 }

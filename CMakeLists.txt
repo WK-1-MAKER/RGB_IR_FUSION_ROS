@@ -153,4 +153,14 @@ if(CATKIN_ENABLE_TESTING)
       gtest_main
     )
   endif()
+
+  catkin_add_gtest(test_camera_geometry
+    tests/test_camera_geometry.cpp
+  )
+  if(TARGET test_camera_geometry)
+    target_link_libraries(test_camera_geometry
+      ${OpenCV_LIBS}
+      gtest_main
+    )
+  endif()
 endif()

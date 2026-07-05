@@ -1,4 +1,5 @@
 #include "ros_yolo/yolo_node.h"
+#include "ros_yolo/camera_geometry.h"
 
 #include <boost/bind.hpp>
 
@@ -332,18 +333,29 @@ void YoloNode::loadCameraCalibration()
     kIr_ = matx33FromVector(cameraConfig.ir.intrinsic);
     distRgb_ = distortionFromVector(cameraConfig.rgb.distortion);
     distIr_ = distortionFromVector(cameraConfig.ir.distortion);
-    rRgbWorld_ = matx33FromVector(cameraConfig.rgb.rotation);
-    rIrWorld_ = matx33FromVector(cameraConfig.ir.rotation);
-    tRgbWorld_ = vec3FromVector(cameraConfig.rgb.translation);
-    tIrWorld_ = vec3FromVector(cameraConfig.ir.translation);
 
-    r_ = rIrWorld_ * rRgbWorld_.t();
-    t_ = tIrWorld_ - r_ * tRgbWorld_;
+    rBodyRgb_ = matx33FromVector(cameraConfig.rgb.rotation);
+    rBodyIr_ = matx33FromVector(cameraConfig.ir.rotation);
+    tBodyRgb_ = vec3FromVector(cameraConfig.rgb.translation);
+    tBodyIr_ = vec3FromVector(cameraConfig.ir.translation);
+
+    const CameraTransform bodyRgb(rBodyRgb_, tBodyRgb_);
+    const CameraTransform bodyIr(rBodyIr_, tBodyIr_);
+    const CameraTransform rgbBody = inverseTransform(bodyRgb);
+    const CameraTransform irBody = inverseTransform(bodyIr);
+    const CameraTransform irRgb = composeTransforms(irBody, bodyRgb);
+
+    rRgbBody_ = rgbBody.rotation;
+    tRgbBody_ = rgbBody.translation;
+    rIrBody_ = irBody.rotation;
+    tIrBody_ = irBody.translation;
+    rIrRgb_ = irRgb.rotation;
+    tIrRgb_ = irRgb.translation;
 
     kRgbTri_ = kRgb_;
     kIrTri_ = kIr_;
-    rTri_ = r_;
-    tTri_ = t_;
+    rTri_ = rIrRgb_;
+    tTri_ = tIrRgb_;
 }
 
 cv::Mat YoloNode::toBgrImage(const sensor_msgs::ImageConstPtr& msg)
@@ -369,10 +381,10 @@ cv::Mat YoloNode::toBgrImage(const sensor_msgs::ImageConstPtr& msg)
 
 void YoloNode::compute_F()
 {
-    const cv::Matx33d tCross(0.0, -t_[2], t_[1],
-                          t_[2], 0.0, -t_[0],
-                          -t_[1], t_[0], 0.0);
-    const cv::Matx33d E_ = tCross * r_;
+    const cv::Matx33d tCross(0.0, -tIrRgb_[2], tIrRgb_[1],
+                          tIrRgb_[2], 0.0, -tIrRgb_[0],
+                          -tIrRgb_[1], tIrRgb_[0], 0.0);
+    const cv::Matx33d E_ = tCross * rIrRgb_;
     F_ = kIr_.inv(cv::DECOMP_SVD).t() * E_ * kRgb_.inv(cv::DECOMP_SVD);
 }
 
@@ -381,12 +393,12 @@ void YoloNode::compute_H()
     const double refDepth = 3.0;
     const cv::Vec3d n(0.0, 0.0, 1.0);
     const cv::Matx33d tOuter(
-        t_[0] * n[0], t_[0] * n[1], t_[0] * n[2],
-        t_[1] * n[0], t_[1] * n[1], t_[1] * n[2],
-        t_[2] * n[0], t_[2] * n[1], t_[2] * n[2]);
+        tIrRgb_[0] * n[0], tIrRgb_[0] * n[1], tIrRgb_[0] * n[2],
+        tIrRgb_[1] * n[0], tIrRgb_[1] * n[1], tIrRgb_[1] * n[2],
+        tIrRgb_[2] * n[0], tIrRgb_[2] * n[1], tIrRgb_[2] * n[2]);
 
-    H_ = kIr_ * (r_ - tOuter * (1.0 / refDepth)) * kRgb_.inv(cv::DECOMP_SVD);
-    //ROS_INFO("Homography initialized for RGB->IR alignment.");
+    H_ = kIr_ * (rIrRgb_ - tOuter * (1.0 / refDepth)) * kRgb_.inv(cv::DECOMP_SVD);
+    // H_ maps RGB image coordinates into IR image coordinates for alignment.
 }
 
 void YoloNode::updateRectification(const cv::Size& imageSize)
@@ -412,10 +424,10 @@ void YoloNode::updateRectification(const cv::Size& imageSize)
     const cv::Mat distCoeffsRgb = cv::Mat::zeros(1, 5, CV_64F);
     const cv::Mat distCoeffsIr = cv::Mat::zeros(1, 5, CV_64F);
     const cv::Mat rotation = (cv::Mat_<double>(3, 3)
-        << r_(0, 0), r_(0, 1), r_(0, 2),
-           r_(1, 0), r_(1, 1), r_(1, 2),
-           r_(2, 0), r_(2, 1), r_(2, 2));
-    const cv::Mat translation = (cv::Mat_<double>(3, 1) << t_(0), t_(1), t_(2));
+        << rIrRgb_(0, 0), rIrRgb_(0, 1), rIrRgb_(0, 2),
+           rIrRgb_(1, 0), rIrRgb_(1, 1), rIrRgb_(1, 2),
+           rIrRgb_(2, 0), rIrRgb_(2, 1), rIrRgb_(2, 2));
+    const cv::Mat translation = (cv::Mat_<double>(3, 1) << tIrRgb_(0), tIrRgb_(1), tIrRgb_(2));
 
     if (cameraMatrixRgb.empty() || cameraMatrixIr.empty() || rotation.empty() || translation.empty())
     {
@@ -601,8 +613,8 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
         rectificationReady_ = false;
         kRgbTri_ = kRgb_;
         kIrTri_ = kIr_;
-        rTri_ = r_;
-        tTri_ = t_;
+        rTri_ = rIrRgb_;
+        tTri_ = tIrRgb_;
         rRectRgb_ = cv::Matx33d::eye();
         ROS_WARN_STREAM_THROTTLE(1.0, "Rectification disabled for this frame (OpenCV): " << e.what());
     }
@@ -611,8 +623,8 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
         rectificationReady_ = false;
         kRgbTri_ = kRgb_;
         kIrTri_ = kIr_;
-        rTri_ = r_;
-        tTri_ = t_;
+        rTri_ = rIrRgb_;
+        tTri_ = tIrRgb_;
         rRectRgb_ = cv::Matx33d::eye();
         ROS_WARN_STREAM_THROTTLE(1.0, "Rectification disabled for this frame: " << e.what());
     }
@@ -762,6 +774,7 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
     const cv::Matx34d p1 = kRgbTri_ * p1Ext;
     const cv::Matx34d p2 = kIrTri_ * p2Ext;
     const cv::Matx33d rectifiedToLeft = rRectRgb_.t();
+    const CameraTransform bodyRgb(rBodyRgb_, tBodyRgb_);
 
     for (size_t i = 0; i < pairCount; ++i)
     {
@@ -781,14 +794,20 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
 
         const cv::Vec3d pointRectVec(point3dRect.x, point3dRect.y, point3dRect.z);
         const cv::Vec3d pointLeftVec = rectifiedToLeft * pointRectVec; //把矫正坐标系下的3D点转换回左相机坐标系下，以便与检测框进行空间位置验证
-        cv::Point3f point3d(static_cast<float>(pointLeftVec[0]),
-                            static_cast<float>(pointLeftVec[1]),
-                            static_cast<float>(pointLeftVec[2]));
-        if (!std::isfinite(point3d.x) || !std::isfinite(point3d.y) || !std::isfinite(point3d.z))
+        cv::Point3f point3dRgb(static_cast<float>(pointLeftVec[0]),
+                               static_cast<float>(pointLeftVec[1]),
+                               static_cast<float>(pointLeftVec[2]));
+        if (!std::isfinite(point3dRgb.x) || !std::isfinite(point3dRgb.y) || !std::isfinite(point3dRgb.z))
         {
             continue;
         }
-        if (point3d.z <= 0.0f || point3d.z > 30.0f)
+        if (point3dRgb.z <= 0.0f || point3dRgb.z > 30.0f)
+        {
+            continue;
+        }
+
+        const cv::Point3f point3dBody = transformPoint(bodyRgb, point3dRgb);
+        if (!std::isfinite(point3dBody.x) || !std::isfinite(point3dBody.y) || !std::isfinite(point3dBody.z))
         {
             continue;
         }
@@ -820,8 +839,8 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
             const double pointReprojError = reprojectionErrorNorm(point3dRect, p1, p2, ptRgbRect, ptIrRect);
             if (std::isfinite(pointReprojError))
             {
-                // 原始坐标系下的3D位置和矫正坐标系下的重投影误差
-                pointsPerDetection[static_cast<size_t>(bestDetIdx)].push_back({point3d, pointReprojError});
+                // body/IMU坐标系下的3D位置和矫正坐标系下的重投影误差
+                pointsPerDetection[static_cast<size_t>(bestDetIdx)].push_back({point3dBody, pointReprojError});
             }
         }
     }
@@ -915,6 +934,8 @@ std::vector<Detection> YoloNode::remapDetectionsToOriginalRgb(const std::vector<
     std::vector<Detection> remapped;
     remapped.reserve(detections.size());
 
+    // Detections are produced in the IR/aligned image frame, so map their box
+    // corners back into the original RGB image frame for feature association.
     const cv::Mat hIrToRgb = cv::Mat(H_.inv(cv::DECOMP_SVD));
     for (const auto& det : detections)
     {

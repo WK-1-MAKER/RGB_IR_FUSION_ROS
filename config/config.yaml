@@ -1,6 +1,6 @@
 superpoint:
   max_keypoints: 3000
-  keypoint_threshold: 0.01
+  keypoint_threshold: 0.005
   remove_borders: 4
   input_tensor_names:
     - "image"
@@ -12,9 +12,9 @@ superpoint:
   dla_core: -1
 
 superpoint_lightglue:
-  image_width: 320
-  image_height: 240
-  filter_threshold: 0.1
+  image_width: 640
+  image_height: 480
+  filter_threshold: 0.05
   depth_confidence: -1
   width_confidence: -1
   input_tensor_names:
@@ -36,16 +36,16 @@ cameras:
                 0.0, 607.1318359375, 247.97427368164062,
                 0.0, 0.0, 1.0]
     distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
-    rotation: [1.0, 0.0, 0.0,
-               0.0, 1.0, 0.0,
-               0.0, 0.0, 1.0]
+    rotation: [0.0, 0.0, 1.0,
+               -1.0, 0.0, 0.0,
+               0.0, -1.0, 0.0]
     translation: [0.0, 0.0, 0.0]
   ir:
     intrinsic: [593.946114205786, 0.0, 322.242307522658,
                 0.0, 592.545920338569, 264.298408236226,
                 0.0, 0.0, 1.0]
     distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
-    rotation: [1.0, 0.0, 0.0,
-               0.0, 1.0, 0.0,
-               0.0, 0.0, 1.0]
-    translation: [-0.036, 0.03, -0.009]
+    rotation: [0.0, 0.0, 1.0,
+               -1.0, 0.0, 0.0,
+               0.0, -1.0, 0.0]
+    translation: [0.009, -0.036, 0.03]
