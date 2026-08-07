@@ -29,7 +29,7 @@ superpoint_lightglue:
   dla_core: -1
 
 # Camera extrinsics use world_to_camera:
-# X_camera = R_world_to_camera * X_world + t_world_to_camera
+# X_body = R_body_camera * X_camera + t_body_camera
 cameras:
   rgb:
     intrinsic: [606.97900390625, 0.0, 320.3143615722656,

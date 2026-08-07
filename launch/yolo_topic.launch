@@ -1,9 +1,12 @@
 <launch>
+  <!-- .onnx 使用 ONNX Runtime，.engine 使用 TensorRT；也可在 roslaunch 命令行覆盖。 -->
+  <arg name="model_path" default="$(find two_stream)/models/aifi-best-fp16.engine"/>
+
   <node pkg="two_stream" type="ros_yolo_node" name="ros_yolo_node" output="screen">
     <param name="use_gpu" value="true"/>
-    <param name="show_window" value="true"/>
+    <param name="show_window" value="false"/>
 
-    <param name="model_path" value="$(find two_stream)/models/best.onnx"/>
+    <param name="model_path" value="$(arg model_path)"/>
     <param name="class_names_path" value="$(find two_stream)/models/llvip.names"/>
 
     <param name="config_path" value="$(find two_stream)/config/config.yaml"/>

@@ -130,12 +130,48 @@ if(CATKIN_ENABLE_TESTING)
     src/detector.cpp
     src/yolov8_decode.cpp
     src/utils.cpp
+    3rdparty/tensorrtbuffer/src/logger.cpp
   )
   if(TARGET test_detector_postprocess)
     target_link_libraries(test_detector_postprocess
       ${catkin_LIBRARIES}
       ${OpenCV_LIBS}
       ${ONNXRUNTIME_LIB}
+      ${CUDA_LIBRARIES}
+      ${TENSORRT_NVINFER_LIB}
+      ${TENSORRT_NVONNXPARSER_LIB}
+      -Wl,--no-as-needed
+      ${TENSORRT_NVINFER_PLUGIN_LIB}
+      -Wl,--as-needed
+      ${TENSORRT_NVPARSERS_LIB}
+      gtest_main
+    )
+  endif()
+
+  catkin_add_gtest(test_detector_tensorrt
+    tests/test_detector_tensorrt.cpp
+    src/detector.cpp
+    src/yolov8_decode.cpp
+    src/utils.cpp
+    3rdparty/tensorrtbuffer/src/logger.cpp
+  )
+  if(TARGET test_detector_tensorrt)
+    target_compile_definitions(test_detector_tensorrt
+      PRIVATE
+        TWO_STREAM_ENGINE_PATH="${PROJECT_SOURCE_DIR}/models/aifi-best-fp16.engine"
+        TWO_STREAM_ONNX_PATH="${PROJECT_SOURCE_DIR}/models/aifi-best.onnx"
+    )
+    target_link_libraries(test_detector_tensorrt
+      ${catkin_LIBRARIES}
+      ${OpenCV_LIBS}
+      ${ONNXRUNTIME_LIB}
+      ${CUDA_LIBRARIES}
+      ${TENSORRT_NVINFER_LIB}
+      ${TENSORRT_NVONNXPARSER_LIB}
+      -Wl,--no-as-needed
+      ${TENSORRT_NVINFER_PLUGIN_LIB}
+      -Wl,--as-needed
+      ${TENSORRT_NVPARSERS_LIB}
       gtest_main
     )
   endif()
