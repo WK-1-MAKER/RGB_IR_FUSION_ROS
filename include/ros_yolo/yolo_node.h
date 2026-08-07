@@ -124,6 +124,7 @@ private:
 
     bool useGPU_{};
     bool showWindow_{};
+    bool triangulate_{};
 
     double confThreshold_{};
     double iouThreshold_{};

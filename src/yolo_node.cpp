@@ -270,6 +270,7 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 
     pnh_.param<bool>("use_gpu", useGPU_, true);
     pnh_.param<bool>("show_window", showWindow_, false);
+    pnh_.param<bool>("triangulate", triangulate_, true);
 
     pnh_.param<double>("conf_threshold", confThreshold_, 0.30);
     pnh_.param<double>("iou_threshold", iouThreshold_, 0.40);
@@ -297,15 +298,18 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     detector_ = std::make_unique<YoloDetector>(modelPath_, useGPU_, cv::Size(inputWidth, inputHeight));
     imagePub_ = it_.advertise(outputTopic_, 1);
 
-    superpoint_ = std::make_shared<SuperPoint>(configs_->superpoint_config);
-    superpointLightglue_ = std::make_shared<SuperPointLightGlue>(configs_->superpoint_lightglue_config);
+    if (triangulate_)
+    {
+        superpoint_ = std::make_shared<SuperPoint>(configs_->superpoint_config);
+        superpointLightglue_ = std::make_shared<SuperPointLightGlue>(configs_->superpoint_lightglue_config);
 
-    if (!superpoint_->build()) {
-        throw std::runtime_error("Failed to build SuperPoint TensorRT engine.");
-    }
+        if (!superpoint_->build()) {
+            throw std::runtime_error("Failed to build SuperPoint TensorRT engine.");
+        }
 
-    if (!superpointLightglue_->build()) {
-        throw std::runtime_error("Failed to build SuperPoint-LightGlue TensorRT engine.");
+        if (!superpointLightglue_->build()) {
+            throw std::runtime_error("Failed to build SuperPoint-LightGlue TensorRT engine.");
+        }
     }
 
     rgbSub_.subscribe(nh_, rgbTopic_, 1);
@@ -674,6 +678,15 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
     // 将检测结果从配准图像坐标系映射回原始RGB图像坐标系，以便后续与特征点匹配和三角测量使用
     // Detection包含类别ID，置信度，边界框坐标信息
     std::vector<Detection> detectionsOnRgb = remapDetectionsToOriginalRgb(detections, rgbImage.size());
+
+    std::vector<cv::Point3f> perDetectionWeightedPoints(
+        detectionsOnRgb.size(),
+        cv::Point3f(std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::quiet_NaN()));
+
+    if (triangulate_)
+    {
     
     //-------------------------------lightglue--------------------------------
     const int width = configs_->superpoint_lightglue_config.image_width;
@@ -885,12 +898,6 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
 
     std::vector<std::string> perTargetLogs;
     perTargetLogs.reserve(detectionsOnRgb.size());
-    std::vector<cv::Point3f> perDetectionWeightedPoints(
-        detectionsOnRgb.size(),
-        cv::Point3f(std::numeric_limits<float>::quiet_NaN(),
-                    std::numeric_limits<float>::quiet_NaN(),
-                    std::numeric_limits<float>::quiet_NaN()));
-    
     for (size_t detIdx = 0; detIdx < detectionsOnRgb.size(); ++detIdx)
     {
         const auto& detectionSamples = pointsPerDetection[detIdx];
@@ -958,6 +965,7 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
         ROS_INFO_STREAM(frameLog.str());
     }
     //-------------------------------------------------------------
+    }
 
     utils::visualizeDetection(rgbImage, detectionsOnRgb, classNames_, perDetectionWeightedPoints);
     if (showWindow_)
