@@ -312,13 +312,53 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     irSub_.subscribe(nh_, irTopic_, 1);
     sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), rgbSub_, irSub_);
     sync_->registerCallback(boost::bind(&YoloNode::syncImageCallback, this, _1, _2));
-    if (showWindow_)
-    {
-        annotatedSub_ = it_.subscribe(outputTopic_, 1, &YoloNode::annotatedImageCallback, this);
-    }
     ROS_INFO_STREAM("ros_yolo subscribed RGB: " << rgbTopic_);
     ROS_INFO_STREAM("ros_yolo subscribed IR : " << irTopic_);
     ROS_INFO_STREAM("ros_yolo output topic  : " << outputTopic_);
+
+    // Start last so a constructor failure cannot leave a joinable thread behind.
+    // ROS callbacks are not dispatched until main() enters ros::spin().
+    processingThread_ = std::thread(&YoloNode::processingLoop, this);
+}
+
+YoloNode::~YoloNode()
+{
+    rgbSub_.unsubscribe();
+    irSub_.unsubscribe();
+    sync_.reset();
+    frameBuffer_.stop();
+    if (processingThread_.joinable())
+    {
+        processingThread_.join();
+    }
+}
+
+void YoloNode::processingLoop()
+{
+    FramePair frame;
+    while (frameBuffer_.waitAndTake(frame))
+    {
+        try
+        {
+            processImagePair(frame.rgb, frame.ir);
+        }
+        catch (const cv_bridge::Exception& e)
+        {
+            ROS_ERROR_STREAM("Image conversion failed: " << e.what());
+        }
+        catch (const cv::Exception& e)
+        {
+            ROS_ERROR_STREAM("OpenCV processing failed: " << e.what());
+        }
+        catch (const std::exception& e)
+        {
+            ROS_ERROR_STREAM("Frame processing failed: " << e.what());
+        }
+        catch (...)
+        {
+            ROS_ERROR("Frame processing failed with an unknown exception.");
+        }
+    }
 }
 
 void YoloNode::loadCameraCalibration()
@@ -548,18 +588,14 @@ void YoloNode::rectifyMatchedPoints(const std::vector<cv::Point2f>& pointsRgb,
 void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
                                  const sensor_msgs::ImageConstPtr& irMsg)
 {
-    cv::Mat rgbImage;
-    cv::Mat irImage;
-    //try 
-    //{
-        rgbImage = toBgrImage(rgbMsg);
-        irImage = toBgrImage(irMsg);
-    //}
-    /* catch (const cv_bridge::Exception& e)
-    {
-        ROS_ERROR_STREAM("Sync cv_bridge exception: " << e.what());
-        return;
-    } */
+    frameBuffer_.push(FramePair(rgbMsg, irMsg));
+}
+
+void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
+                                const sensor_msgs::ImageConstPtr& irMsg)
+{
+    cv::Mat rgbImage = toBgrImage(rgbMsg);
+    cv::Mat irImage = toBgrImage(irMsg);
 
     if (rgbImage.empty())
     {
@@ -924,6 +960,11 @@ void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
     //-------------------------------------------------------------
 
     utils::visualizeDetection(rgbImage, detectionsOnRgb, classNames_, perDetectionWeightedPoints);
+    if (showWindow_)
+    {
+        cv::imshow("two_stream_annotated", rgbImage);
+        cv::waitKey(1);
+    }
     publishCvImage(rgbImage, rgbMsg->header.stamp);
 
 }
@@ -1018,29 +1059,6 @@ void YoloNode::filterFeaturesByDetections(const Eigen::Matrix<double, 258, Eigen
     {
         filteredFeatures.col(i) = features.col(keepIndices[i]);
         filteredScores(0, i) = scores(0, keepIndices[i]);
-    }
-}
-
-void YoloNode::annotatedImageCallback(const sensor_msgs::ImageConstPtr& msg)
-{
-    if (!showWindow_)
-    {
-        return;
-    }
-
-    try
-    {
-        cv::Mat annotated = toBgrImage(msg);
-        if (annotated.empty())
-        {
-            return;
-        }
-        cv::imshow("two_stream_annotated", annotated);
-        cv::waitKey(1);
-    }
-    catch (const cv_bridge::Exception& e)
-    {
-        ROS_ERROR_STREAM("Annotated cv_bridge exception: " << e.what());
     }
 }
 

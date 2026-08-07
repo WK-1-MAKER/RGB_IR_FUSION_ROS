@@ -26,6 +26,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(OpenCV 4 REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(Threads REQUIRED)
 
 find_library(ONNXRUNTIME_LIB
   NAMES onnxruntime libonnxruntime.so libonnxruntime.so.1.18.0
@@ -86,6 +87,7 @@ add_executable(ros_yolo_node
 
 target_link_libraries(ros_yolo_node
   ${catkin_LIBRARIES}
+  Threads::Threads
   ${OpenCV_LIBS}
   ${ONNXRUNTIME_LIB}
   ${CUDA_LIBRARIES}
@@ -196,6 +198,17 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET test_camera_geometry)
     target_link_libraries(test_camera_geometry
       ${OpenCV_LIBS}
+      gtest_main
+    )
+  endif()
+
+  catkin_add_gtest(test_latest_frame_buffer
+    tests/test_latest_frame_buffer.cpp
+  )
+  if(TARGET test_latest_frame_buffer)
+    target_link_libraries(test_latest_frame_buffer
+      ${catkin_LIBRARIES}
+      Threads::Threads
       gtest_main
     )
   endif()

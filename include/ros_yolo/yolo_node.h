@@ -12,12 +12,12 @@
 #include <opencv2/opencv.hpp>
 
 #include <memory>
-#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
-#include <chrono>
 
 #include "ros_yolo/detector.h"
+#include "ros_yolo/latest_frame_buffer.h"
 #include "ros_yolo/yolo_utils.h"
 #include "lightglue/super_point.h"
 #include "lightglue/light_glue.h"
@@ -29,6 +29,7 @@ class YoloNode
 {
 public:
     YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh);
+    ~YoloNode();
 
 private:
     static cv::Mat toBgrImage(const sensor_msgs::ImageConstPtr& msg);
@@ -42,6 +43,9 @@ private:
                               std::vector<cv::Point2f>& rectifiedIr) const;
     void syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
                            const sensor_msgs::ImageConstPtr& irMsg);
+    void processingLoop();
+    void processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
+                          const sensor_msgs::ImageConstPtr& irMsg);
     std::vector<Detection> remapDetectionsToOriginalRgb(const std::vector<Detection>& detections,
                                                         const cv::Size& rgbSize) const;
     void filterFeaturesByDetections(const Eigen::Matrix<double, 258, Eigen::Dynamic>& features,
@@ -51,7 +55,6 @@ private:
                                     double scaleY,
                                     Eigen::Matrix<double, 258, Eigen::Dynamic>& filteredFeatures,
                                     Eigen::Matrix<double, 1, Eigen::Dynamic>& filteredScores) const;
-    void annotatedImageCallback(const sensor_msgs::ImageConstPtr& msg);
     void publishCvImage(const cv::Mat& image, const ros::Time& stamp);
     void correct_points(const cv::Matx33d& F,
                         const std::vector<cv::KeyPoint>& points0,
@@ -74,8 +77,9 @@ private:
     message_filters::Subscriber<sensor_msgs::Image> rgbSub_;
     message_filters::Subscriber<sensor_msgs::Image> irSub_;
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
-    image_transport::Subscriber annotatedSub_;
     image_transport::Publisher imagePub_;
+    LatestFrameBuffer frameBuffer_;
+    std::thread processingThread_;
 
     std::unique_ptr<YoloDetector> detector_;
     std::vector<std::string> classNames_;
