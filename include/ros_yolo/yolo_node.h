@@ -61,11 +61,11 @@ private:
                         const std::vector<cv::KeyPoint>& points1,
                         std::vector<cv::DMatch>& matches,
                         double threshold = 3.0);
-    cv::Point2f normalize_pixel(const cv::Matx33d& K, const cv::Point2f& pt) const;
-    cv::Point3f triangulate_svd(const cv::Matx34d& P1,
-                                const cv::Matx34d& P2,
-                                const cv::Point2f& ptn1,
-                                const cv::Point2f& ptn2) const;
+    cv::Point2d normalize_pixel(const cv::Matx33d& K, const cv::Point2f& pt) const;
+    cv::Vec3d triangulate_svd(const cv::Matx34d& P1,
+                              const cv::Matx34d& P2,
+                              const cv::Point2d& ptn1,
+                              const cv::Point2d& ptn2) const;
     cv::Point3f triangulate(const cv::Point2f& pt1, const cv::Point2f& pt2, int iters = 10) const;
 
 private:

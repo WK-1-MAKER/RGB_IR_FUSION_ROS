@@ -105,6 +105,13 @@ set_target_properties(ros_yolo_node PROPERTIES
   INSTALL_RPATH "${ONNXRUNTIME_DIR}/lib;${TENSORRT_LIB_DIR};${TENSORRT_TARGET_LIB_DIR}"
 )
 
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_camera_geometry tests/test_camera_geometry.cpp)
+  if(TARGET test_camera_geometry)
+    target_link_libraries(test_camera_geometry ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
+  endif()
+endif()
+
 install(TARGETS ros_yolo_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

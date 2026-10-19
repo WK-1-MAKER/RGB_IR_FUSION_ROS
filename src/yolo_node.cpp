@@ -441,7 +441,7 @@ void YoloNode::compute_H()
         tIrRgb_[1] * n[0], tIrRgb_[1] * n[1], tIrRgb_[1] * n[2],
         tIrRgb_[2] * n[0], tIrRgb_[2] * n[1], tIrRgb_[2] * n[2]);
 
-    H_ = kIr_ * (rIrRgb_ - tOuter * (1.0 / refDepth)) * kRgb_.inv(cv::DECOMP_SVD);
+    H_ = kIr_ * (rIrRgb_ + tOuter * (1.0 / refDepth)) * kRgb_.inv(cv::DECOMP_SVD);
     // H_ maps RGB image coordinates into IR image coordinates for alignment.
 }
 
@@ -559,6 +559,9 @@ void YoloNode::rectifyMatchedPoints(const std::vector<cv::Point2f>& pointsRgb,
 
     if (!rectificationReady_)
     {
+        // 原始匹配点来自已去畸变图像，与回退后的三角化参数对应。
+        rectifiedRgb = pointsRgb;
+        rectifiedIr = pointsIr;
         return;
     }
 
@@ -1112,16 +1115,16 @@ void YoloNode::correct_points(const cv::Matx33d& F,
     matches.swap(corrected_matches);
 }
 
-cv::Point2f YoloNode::normalize_pixel(const cv::Matx33d& K, const cv::Point2f& pt) const
+cv::Point2d YoloNode::normalize_pixel(const cv::Matx33d& K, const cv::Point2f& pt) const
 {
     cv::Matx31d normalized_pt = K.inv(cv::DECOMP_SVD) * cv::Matx31d(pt.x, pt.y, 1.0);
-    return cv::Point2f(normalized_pt(0) / normalized_pt(2), normalized_pt(1) / normalized_pt(2));
+    return cv::Point2d(normalized_pt(0) / normalized_pt(2), normalized_pt(1) / normalized_pt(2));
 }
 
-cv::Point3f YoloNode::triangulate_svd(const cv::Matx34d& P1,
-                                      const cv::Matx34d& P2,
-                                      const cv::Point2f& ptn1,
-                                      const cv::Point2f& ptn2) const
+cv::Vec3d YoloNode::triangulate_svd(const cv::Matx34d& P1,
+                                    const cv::Matx34d& P2,
+                                    const cv::Point2d& ptn1,
+                                    const cv::Point2d& ptn2) const
 {
     const double u1 = static_cast<double>(ptn1.x);
     const double v1 = static_cast<double>(ptn1.y);
@@ -1158,13 +1161,13 @@ cv::Point3f YoloNode::triangulate_svd(const cv::Matx34d& P1,
                  vt.at<double>(3, 3));
 
     if (std::abs(xh[3]) < 1e-9) {
-        const float nan = std::numeric_limits<float>::quiet_NaN();
-        return cv::Point3f(nan, nan, nan);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        return cv::Vec3d(nan, nan, nan);
     }
 
-    return cv::Point3f(static_cast<float>(xh[0] / xh[3]),
-                       static_cast<float>(xh[1] / xh[3]),
-                       static_cast<float>(xh[2] / xh[3]));
+    return cv::Vec3d(xh[0] / xh[3],
+                     xh[1] / xh[3],
+                     xh[2] / xh[3]);
 }
 
 cv::Point2f reprojection_error(const cv::Point3f& point3d, const cv::Matx34d& P, const cv::Point2f& observed)
@@ -1189,54 +1192,29 @@ cv::Point3f YoloNode::triangulate(const cv::Point2f& pt1, const cv::Point2f& pt2
     const cv::Matx34d P2_ext(rTri_(0, 0), rTri_(0, 1), rTri_(0, 2), tTri_(0),
                              rTri_(1, 0), rTri_(1, 1), rTri_(1, 2), tTri_(1),
                              rTri_(2, 0), rTri_(2, 1), rTri_(2, 2), tTri_(2));
-    cv::Point2f ptn1 = normalize_pixel(kRgbTri_, pt1);
-    cv::Point2f ptn2 = normalize_pixel(kIrTri_, pt2);
-    cv::Point3f point3d_svd = triangulate_svd(P1_ext, P2_ext, ptn1, ptn2);
-    if (!std::isfinite(point3d_svd.x) || !std::isfinite(point3d_svd.y) || !std::isfinite(point3d_svd.z))
+    const cv::Point2d ptn1 = normalize_pixel(kRgbTri_, pt1);
+    const cv::Point2d ptn2 = normalize_pixel(kIrTri_, pt2);
+    const cv::Vec3d point3dSvd = triangulate_svd(P1_ext, P2_ext, ptn1, ptn2);
+    if (!std::isfinite(point3dSvd[0]) || !std::isfinite(point3dSvd[1]) ||
+        !std::isfinite(point3dSvd[2]))
     {
-        return point3d_svd;
+        return cv::Point3f(static_cast<float>(point3dSvd[0]),
+                           static_cast<float>(point3dSvd[1]),
+                           static_cast<float>(point3dSvd[2]));
     }
 
     const cv::Matx34d P1 = kRgbTri_ * P1_ext;
     const cv::Matx34d P2 = kIrTri_ * P2_ext;
-    cv::Point3f point3d_optimized = point3d_svd;
-    cv::Vec4d last_error(0.0, 0.0, 0.0, 0.0);
-
-    while (iters--) {
-        cv::Point2f reproj_error_rgb = reprojection_error(point3d_optimized, P1, pt1);
-        cv::Point2f reproj_error_ir = reprojection_error(point3d_optimized, P2, pt2);
-        if (!std::isfinite(reproj_error_rgb.x) || !std::isfinite(reproj_error_rgb.y) ||
-            !std::isfinite(reproj_error_ir.x) || !std::isfinite(reproj_error_ir.y))
-        {
-            break;
-        }
-        cv::Vec4d error = cv::Vec4d(reproj_error_rgb.x, reproj_error_rgb.y, reproj_error_ir.x, reproj_error_ir.y);
-        cv::Matx43d J;
-        const float eps = 1e-6f;
-        for (int i = 0; i < 3; ++i) {
-            cv::Vec3d dx(0.0, 0.0, 0.0);
-            dx[i] = eps;
-            J(0, i) = (reprojection_error(cv::Point3f(point3d_optimized.x + dx[0], point3d_optimized.y + dx[1], point3d_optimized.z + dx[2]), P1, pt1).x - error[0]) / eps;
-            J(1, i) = (reprojection_error(cv::Point3f(point3d_optimized.x + dx[0], point3d_optimized.y + dx[1], point3d_optimized.z + dx[2]), P1, pt1).y - error[1]) / eps;
-            J(2, i) = (reprojection_error(cv::Point3f(point3d_optimized.x + dx[0], point3d_optimized.y + dx[1], point3d_optimized.z + dx[2]), P2, pt2).x - error[2]) / eps;
-            J(3, i) = (reprojection_error(cv::Point3f(point3d_optimized.x + dx[0], point3d_optimized.y + dx[1], point3d_optimized.z + dx[2]), P2, pt2).y - error[3]) / eps;
-        }
-        cv::Matx33d JtJ = J.t() * J;
-        cv::Matx31d Jte = J.t() * error;
-        cv::Matx31d delta = JtJ.inv(cv::DECOMP_SVD) * Jte;
-        point3d_optimized = cv::Point3f(point3d_optimized.x - static_cast<float>(delta(0)),
-                                    point3d_optimized.y - static_cast<float>(delta(1)),
-                                    point3d_optimized.z - static_cast<float>(delta(2)));
-        cv::Vec4d err_diff = error - last_error;
-        double err_norm = std::sqrt(error[0] * error[0] + error[1] * error[1] + error[2] * error[2] + error[3] * error[3]);
-        double err_diff_norm = std::sqrt(err_diff[0] * err_diff[0] + err_diff[1] * err_diff[1] + err_diff[2] * err_diff[2] + err_diff[3] * err_diff[3]);
-        double last_err_norm = std::sqrt(last_error[0] * last_error[0] + last_error[1] * last_error[1] + last_error[2] * last_error[2] + last_error[3] * last_error[3]);
-        if ((last_err_norm > 1e-10 && err_diff_norm / last_err_norm < 0.001) || err_norm < 0.5) {
-            break;
-        }
-        last_error = error;
-    }
-    return point3d_optimized;  
+    const cv::Vec3d point3dOptimized = refineTriangulatedPoint(
+        point3dSvd,
+        P1,
+        P2,
+        cv::Point2d(pt1.x, pt1.y),
+        cv::Point2d(pt2.x, pt2.y),
+        iters);
+    return cv::Point3f(static_cast<float>(point3dOptimized[0]),
+                       static_cast<float>(point3dOptimized[1]),
+                       static_cast<float>(point3dOptimized[2]));
 }
 
 void YoloNode::publishCvImage(const cv::Mat& image, const ros::Time& stamp)
