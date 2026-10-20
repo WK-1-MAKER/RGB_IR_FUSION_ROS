@@ -1,7 +1,9 @@
 #include "ros_yolo/yolo_node.h"
 #include "ros_yolo/camera_geometry.h"
+#include "ros_yolo/frustum_filter.h"
 
 #include <boost/bind.hpp>
+#include <visualization_msgs/MarkerArray.h>
 
 #include <algorithm>
 #include <cmath>
@@ -267,6 +269,15 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     pnh_.param<std::string>("rgb_topic", rgbTopic_, "/camera/color/image_raw");
     pnh_.param<std::string>("ir_topic", irTopic_, "/pub_ir");
     pnh_.param<std::string>("output_topic", outputTopic_, "/two_stream/image_annotated");
+    pnh_.param<std::string>("lidar_topic", lidarTopic_, "/fusion/points");
+    pnh_.param<std::string>("filtered_point_cloud_topic",
+                            filteredPointCloudTopic_,
+                            "/fusion/points_filtered");
+    pnh_.param<double>("sync_max_interval", syncMaxInterval_, 0.1);
+    if (!std::isfinite(syncMaxInterval_) || syncMaxInterval_ < 0.0)
+    {
+        throw std::runtime_error("sync_max_interval must be finite and nonnegative.");
+    }
 
     pnh_.param<bool>("use_gpu", useGPU_, true);
     pnh_.param<bool>("show_window", showWindow_, false);
@@ -297,6 +308,8 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 
     detector_ = std::make_unique<YoloDetector>(modelPath_, useGPU_, cv::Size(inputWidth, inputHeight));
     imagePub_ = it_.advertise(outputTopic_, 1);
+    filteredPointCloudPub_ = nh_.advertise<sensor_msgs::PointCloud2>(filteredPointCloudTopic_, 100);
+    frustumRaysPub_ = nh_.advertise<visualization_msgs::MarkerArray>("/fusion/frustum_rays", 1);
 
     if (triangulate_)
     {
@@ -312,13 +325,17 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
         }
     }
 
-    rgbSub_.subscribe(nh_, rgbTopic_, 1);
-    irSub_.subscribe(nh_, irTopic_, 1);
-    sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), rgbSub_, irSub_);
-    sync_->registerCallback(boost::bind(&YoloNode::syncImageCallback, this, _1, _2));
+    rgbSub_.subscribe(nh_, rgbTopic_, 10);
+    irSub_.subscribe(nh_, irTopic_, 10);
+    lidarSub_.subscribe(nh_, lidarTopic_, 10);
+    sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), rgbSub_, irSub_, lidarSub_);
+    sync_->setMaxIntervalDuration(ros::Duration(syncMaxInterval_));
+    sync_->registerCallback(boost::bind(&YoloNode::syncImageCallback, this, _1, _2, _3));
     ROS_INFO_STREAM("ros_yolo subscribed RGB: " << rgbTopic_);
     ROS_INFO_STREAM("ros_yolo subscribed IR : " << irTopic_);
+    ROS_INFO_STREAM("ros_yolo subscribed cloud: " << lidarTopic_);
     ROS_INFO_STREAM("ros_yolo output topic  : " << outputTopic_);
+    ROS_INFO_STREAM("ros_yolo filtered cloud: " << filteredPointCloudTopic_);
 
     // Start last so a constructor failure cannot leave a joinable thread behind.
     // ROS callbacks are not dispatched until main() enters ros::spin().
@@ -329,6 +346,7 @@ YoloNode::~YoloNode()
 {
     rgbSub_.unsubscribe();
     irSub_.unsubscribe();
+    lidarSub_.unsubscribe();
     sync_.reset();
     frameBuffer_.stop();
     if (processingThread_.joinable())
@@ -344,7 +362,7 @@ void YoloNode::processingLoop()
     {
         try
         {
-            processImagePair(frame.rgb, frame.ir);
+            processImagePair(frame.rgb, frame.ir, frame.lidar);
         }
         catch (const cv_bridge::Exception& e)
         {
@@ -593,13 +611,75 @@ void YoloNode::rectifyMatchedPoints(const std::vector<cv::Point2f>& pointsRgb,
 }
 
 void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
-                                 const sensor_msgs::ImageConstPtr& irMsg)
+                                 const sensor_msgs::ImageConstPtr& irMsg,
+                                 const sensor_msgs::PointCloud2ConstPtr& lidarMsg)
 {
-    frameBuffer_.push(FramePair(rgbMsg, irMsg));
+    // 整组替换待处理帧，检测结束后仍使用本组点云。
+    frameBuffer_.push(FramePair(rgbMsg, irMsg, lidarMsg));
+}
+
+void YoloNode::publishFilteredPointClouds(
+    const std::vector<Detection>& detections,
+    const sensor_msgs::PointCloud2ConstPtr& cloudMsg)
+{
+    if (!cloudMsg)
+    {
+        return;
+    }
+
+    // 临时可视化：每帧清除旧射线，显示长度不影响无限远视锥体过滤。
+    visualization_msgs::MarkerArray markers;
+    visualization_msgs::Marker clear;
+    clear.header = cloudMsg->header;
+    clear.action = visualization_msgs::Marker::DELETEALL;
+    markers.markers.push_back(clear);
+
+    try
+    {
+        for (const Detection& detection : detections)
+        {
+            BodyFrustum frustum;
+            if (buildBodyFrustum(detection.box, kRgb_, rBodyRgb_, tBodyRgb_, frustum))
+            {
+                visualization_msgs::Marker marker;
+                marker.header = cloudMsg->header;
+                marker.ns = "frustum_rays";
+                marker.id = static_cast<int>(markers.markers.size() - 1);
+                marker.type = visualization_msgs::Marker::LINE_LIST;
+                marker.action = visualization_msgs::Marker::ADD;
+                marker.pose.orientation.w = 1.0;
+                marker.scale.x = 0.03;
+                marker.color.g = 1.0;
+                marker.color.a = 1.0;
+                marker.lifetime = ros::Duration(0);  // 暂停 rosbag 时保留，下一帧通过 DELETEALL 更新。
+                for (const auto& ray : frustum.rays)
+                {
+                    geometry_msgs::Point start, end;
+                    start.x = frustum.origin[0];
+                    start.y = frustum.origin[1];
+                    start.z = frustum.origin[2];
+                    const cv::Vec3d tip = frustum.origin + 30.0 * ray;
+                    end.x = tip[0];
+                    end.y = tip[1];
+                    end.z = tip[2];
+                    marker.points.push_back(start);
+                    marker.points.push_back(end);
+                }
+                markers.markers.push_back(marker);
+                filteredPointCloudPub_.publish(filterPointCloud(*cloudMsg, frustum));
+            }
+        }
+    }
+    catch (const std::exception& e)
+    {
+        ROS_WARN_THROTTLE(2.0, "Cannot filter PointCloud2: %s", e.what());
+    }
+    frustumRaysPub_.publish(markers);
 }
 
 void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
-                                const sensor_msgs::ImageConstPtr& irMsg)
+                                const sensor_msgs::ImageConstPtr& irMsg,
+                                const sensor_msgs::PointCloud2ConstPtr& lidarMsg)
 {
     cv::Mat rgbImage = toBgrImage(rgbMsg);
     cv::Mat irImage = toBgrImage(irMsg);
@@ -681,6 +761,8 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
     // 将检测结果从配准图像坐标系映射回原始RGB图像坐标系，以便后续与特征点匹配和三角测量使用
     // Detection包含类别ID，置信度，边界框坐标信息
     std::vector<Detection> detectionsOnRgb = remapDetectionsToOriginalRgb(detections, rgbImage.size());
+
+    publishFilteredPointClouds(detectionsOnRgb, lidarMsg);
 
     std::vector<cv::Point3f> perDetectionWeightedPoints(
         detectionsOnRgb.size(),

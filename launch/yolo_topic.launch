@@ -3,7 +3,7 @@
   <node pkg="two_stream" type="ros_yolo_node" name="ros_yolo_node" output="screen">
     <param name="use_gpu" value="true"/>
     <param name="show_window" value="true"/>
-    <param name="triangulate" value="true"/>
+    <param name="triangulate" value="false"/>
 
     <param name="model_path" value="$(find two_stream)/models/aifi-best-fp16.engine"/>
     <param name="class_names_path" value="$(find two_stream)/models/llvip.names"/>
@@ -13,6 +13,10 @@
 
     <param name="rgb_topic" value="/camera/color/image_raw"/>
     <param name="ir_topic" value="/pub_ir"/>
+    <param name="lidar_topic" value="/fusion/points"/>
+    <param name="filtered_point_cloud_topic" value="/fusion/points_filtered"/>
+    <!-- 三路消息最大时间戳跨度，单位：秒。 -->
+    <param name="sync_max_interval" value="0.1"/>
     <param name="output_topic" value="/two_stream/image_annotated"/>
 
     <param name="input_width" value="640"/>

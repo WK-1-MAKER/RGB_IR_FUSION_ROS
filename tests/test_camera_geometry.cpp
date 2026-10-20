@@ -1,4 +1,5 @@
 #include "ros_yolo/camera_geometry.h"
+#include "ros_yolo/frustum_geometry.h"
 
 #include <gtest/gtest.h>
 
@@ -86,6 +87,36 @@ TEST(CameraGeometryTest, TransformsPointIntoBodyFrame)
     EXPECT_NEAR(pointBody.x, 1.1F, 1e-6F);
     EXPECT_NEAR(pointBody.y, 1.8F, 1e-6F);
     EXPECT_NEAR(pointBody.z, 3.3F, 1e-6F);
+}
+
+TEST(CameraGeometryTest, BuildsAndTestsRgbDetectionFrustumInBodyFrame)
+{
+    const cv::Matx33d intrinsic(100.0, 0.0, 100.0,
+                                0.0, 100.0, 100.0,
+                                0.0, 0.0, 1.0);
+    ros_yolo::BodyFrustum frustum;
+    ASSERT_TRUE(ros_yolo::buildBodyFrustum(
+        cv::Rect(90, 90, 20, 20), intrinsic, cv::Matx33d::eye(), cv::Vec3d(1.0, 2.0, 3.0), frustum));
+
+    EXPECT_TRUE(frustum.contains(cv::Vec3d(1.0, 2.0, 8.0)));
+    EXPECT_FALSE(frustum.contains(cv::Vec3d(4.0, 2.0, 8.0)));
+    EXPECT_FALSE(frustum.contains(cv::Vec3d(1.0, 2.0, 2.0)));
+}
+
+TEST(CameraGeometryTest, RotatesFrustumRaysWithCameraExtrinsic)
+{
+    const cv::Matx33d intrinsic(100.0, 0.0, 100.0,
+                                0.0, 100.0, 100.0,
+                                0.0, 0.0, 1.0);
+    const cv::Matx33d rotateCameraZToBodyX(0.0, 0.0, 1.0,
+                                           -1.0, 0.0, 0.0,
+                                           0.0, -1.0, 0.0);
+    ros_yolo::BodyFrustum frustum;
+    ASSERT_TRUE(ros_yolo::buildBodyFrustum(
+        cv::Rect(90, 90, 20, 20), intrinsic, rotateCameraZToBodyX, cv::Vec3d(0.0, 0.0, 0.0), frustum));
+
+    EXPECT_TRUE(frustum.contains(cv::Vec3d(5.0, 0.0, 0.0)));
+    EXPECT_FALSE(frustum.contains(cv::Vec3d(-5.0, 0.0, 0.0)));
 }
 
 TEST(CameraGeometryTest, RefinementNeverIncreasesReprojectionError)
@@ -241,4 +272,47 @@ TEST(CameraGeometryTest, RefinementDoesNotWorsenNoisyStereoTriangulations)
             }
         }
     }
+}
+
+TEST(CameraGeometryTest, FrustumMatchesCameraProjectionWithRotatedTranslatedPose)
+{
+    const cv::Matx33d intrinsic(600, 0, 320, 0, 610, 240, 0, 0, 1);
+    cv::Matx33d rotation;
+    cv::Rodrigues(cv::Vec3d(0.2, -0.5, 0.1), rotation);
+    const cv::Vec3d translation(2, -1, 0.7);
+    const cv::Rect box(260, 180, 120, 100);
+    ros_yolo::BodyFrustum frustum;
+    ASSERT_TRUE(ros_yolo::buildBodyFrustum(box, intrinsic, rotation, translation, frustum));
+    expectVecNear(frustum.origin, translation);
+    for (double u : {250., 260., 280., 379., 380., 390.})
+    {
+        for (double v : {170., 180., 220., 279., 280., 290.})
+        {
+            for (double depth : {-5., 0.5, 50.})
+            {
+                const cv::Vec3d cameraPoint = intrinsic.inv() * cv::Vec3d(u, v, 1) * depth;
+                const bool expected = depth > 0 && u >= 260 && u <= 380 && v >= 180 && v <= 280;
+                EXPECT_EQ(frustum.contains(rotation * cameraPoint + translation), expected);
+            }
+        }
+    }
+    const cv::Point2d corners[] = {{260, 180}, {380, 180}, {380, 280}, {260, 280}};
+    for (size_t i = 0; i < frustum.rays.size(); ++i)
+    {
+        EXPECT_NEAR(cv::norm(frustum.rays[i]), 1., 1e-12);
+        const cv::Vec3d cameraRay = rotation.t() * frustum.rays[i];
+        const cv::Vec3d pixel = intrinsic * cameraRay;
+        EXPECT_NEAR(pixel[0] / pixel[2], corners[i].x, 1e-9);
+        EXPECT_NEAR(pixel[1] / pixel[2], corners[i].y, 1e-9);
+        EXPECT_TRUE(frustum.contains(translation + 10 * frustum.rays[i]));
+    }
+    EXPECT_FALSE(frustum.contains(translation));
+    EXPECT_FALSE(frustum.contains(cv::Vec3d(std::numeric_limits<double>::infinity(), 0, 0)));
+}
+
+TEST(CameraGeometryTest, RejectsEmptyDetectionFrustum)
+{
+    ros_yolo::BodyFrustum frustum;
+    EXPECT_FALSE(ros_yolo::buildBodyFrustum(cv::Rect(0, 0, 0, 10), cv::Matx33d::eye(),
+                                           cv::Matx33d::eye(), cv::Vec3d(0, 0, 0), frustum));
 }

@@ -18,6 +18,7 @@ endif()
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   sensor_msgs
+  visualization_msgs
   std_msgs
   cv_bridge
   image_transport
@@ -57,7 +58,7 @@ endif()
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp sensor_msgs std_msgs cv_bridge image_transport message_filters
+  CATKIN_DEPENDS roscpp sensor_msgs visualization_msgs std_msgs cv_bridge image_transport message_filters
 )
 
 include_directories(
@@ -75,6 +76,7 @@ include_directories(
 add_executable(ros_yolo_node
   src/main.cpp
   src/yolo_node.cpp
+  src/frustum_filter.cpp
   src/detector.cpp
   src/yolov8_decode.cpp
   src/utils.cpp
@@ -106,6 +108,14 @@ set_target_properties(ros_yolo_node PROPERTIES
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_frustum_filter tests/test_frustum_filter.cpp src/frustum_filter.cpp)
+  if(TARGET test_frustum_filter)
+    target_link_libraries(test_frustum_filter ${catkin_LIBRARIES} ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
+  endif()
+  catkin_add_gtest(test_latest_frame_buffer tests/test_latest_frame_buffer.cpp)
+  if(TARGET test_latest_frame_buffer)
+    target_link_libraries(test_latest_frame_buffer ${catkin_LIBRARIES} Threads::Threads ${GTEST_MAIN_LIBRARIES})
+  endif()
   catkin_add_gtest(test_camera_geometry tests/test_camera_geometry.cpp)
   if(TARGET test_camera_geometry)
     target_link_libraries(test_camera_geometry ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})

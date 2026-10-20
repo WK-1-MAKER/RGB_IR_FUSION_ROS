@@ -7,6 +7,7 @@
 #include <message_filters/synchronizer.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/image_encodings.h>
 
 #include <opencv2/opencv.hpp>
@@ -42,10 +43,12 @@ private:
                               std::vector<cv::Point2f>& rectifiedRgb,
                               std::vector<cv::Point2f>& rectifiedIr) const;
     void syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
-                           const sensor_msgs::ImageConstPtr& irMsg);
+                           const sensor_msgs::ImageConstPtr& irMsg,
+                           const sensor_msgs::PointCloud2ConstPtr& lidarMsg);
     void processingLoop();
     void processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
-                          const sensor_msgs::ImageConstPtr& irMsg);
+                          const sensor_msgs::ImageConstPtr& irMsg,
+                          const sensor_msgs::PointCloud2ConstPtr& lidarMsg);
     std::vector<Detection> remapDetectionsToOriginalRgb(const std::vector<Detection>& detections,
                                                         const cv::Size& rgbSize) const;
     void filterFeaturesByDetections(const Eigen::Matrix<double, 258, Eigen::Dynamic>& features,
@@ -56,6 +59,8 @@ private:
                                     Eigen::Matrix<double, 258, Eigen::Dynamic>& filteredFeatures,
                                     Eigen::Matrix<double, 1, Eigen::Dynamic>& filteredScores) const;
     void publishCvImage(const cv::Mat& image, const ros::Time& stamp);
+    void publishFilteredPointClouds(const std::vector<Detection>& detections,
+                                    const sensor_msgs::PointCloud2ConstPtr& cloudMsg);
     void correct_points(const cv::Matx33d& F,
                         const std::vector<cv::KeyPoint>& points0,
                         const std::vector<cv::KeyPoint>& points1,
@@ -69,7 +74,7 @@ private:
     cv::Point3f triangulate(const cv::Point2f& pt1, const cv::Point2f& pt2, int iters = 10) const;
 
 private:
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image>;
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::PointCloud2>;
 
     ros::NodeHandle nh_;
     ros::NodeHandle pnh_;
@@ -78,6 +83,9 @@ private:
     message_filters::Subscriber<sensor_msgs::Image> irSub_;
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
     image_transport::Publisher imagePub_;
+    message_filters::Subscriber<sensor_msgs::PointCloud2> lidarSub_;
+    ros::Publisher filteredPointCloudPub_;
+    ros::Publisher frustumRaysPub_;  // 临时 RViz 可视化。
     LatestFrameBuffer frameBuffer_;
     std::thread processingThread_;
 
@@ -89,6 +97,8 @@ private:
     std::string rgbTopic_;
     std::string irTopic_;
     std::string outputTopic_;
+    std::string lidarTopic_;
+    std::string filteredPointCloudTopic_;
     std::string config_path_;
     std::string model_dir_;
     std::unique_ptr<Configs> configs_;
@@ -128,6 +138,7 @@ private:
 
     double confThreshold_{};
     double iouThreshold_{};
+    double syncMaxInterval_{};
 
     std::shared_ptr<SuperPoint> superpoint_;
     std::shared_ptr<SuperPointLightGlue> superpointLightglue_;

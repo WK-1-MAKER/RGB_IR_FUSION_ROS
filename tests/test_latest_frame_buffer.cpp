@@ -15,9 +15,11 @@ ros_yolo::FramePair makePair(uint32_t sequence)
 {
     auto rgb = boost::make_shared<sensor_msgs::Image>();
     auto ir = boost::make_shared<sensor_msgs::Image>();
+    auto lidar = boost::make_shared<sensor_msgs::PointCloud2>();
     rgb->header.seq = sequence;
     ir->header.seq = sequence;
-    return ros_yolo::FramePair(rgb, ir);
+    lidar->header.seq = sequence;
+    return ros_yolo::FramePair(rgb, ir, lidar);
 }
 }  // namespace
 
@@ -31,8 +33,10 @@ TEST(LatestFrameBufferTest, ReturnsNewestPairWhenPendingPairIsReplaced)
     ASSERT_TRUE(buffer.waitAndTake(result));
     ASSERT_TRUE(result.rgb);
     ASSERT_TRUE(result.ir);
+    ASSERT_TRUE(result.lidar);
     EXPECT_EQ(result.rgb->header.seq, 2u);
     EXPECT_EQ(result.ir->header.seq, 2u);
+    EXPECT_EQ(result.lidar->header.seq, 2u);
     buffer.stop();
 }
 

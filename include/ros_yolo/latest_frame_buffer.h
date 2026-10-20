@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/PointCloud2.h>
 
 #include <condition_variable>
 #include <memory>
@@ -14,13 +15,15 @@ struct FramePair
     FramePair() = default;
 
     FramePair(const sensor_msgs::ImageConstPtr& rgbIn,
-              const sensor_msgs::ImageConstPtr& irIn)
-        : rgb(rgbIn), ir(irIn)
+              const sensor_msgs::ImageConstPtr& irIn,
+              const sensor_msgs::PointCloud2ConstPtr& lidarIn)
+        : rgb(rgbIn), ir(irIn), lidar(lidarIn)
     {
     }
 
     sensor_msgs::ImageConstPtr rgb;
     sensor_msgs::ImageConstPtr ir;
+    sensor_msgs::PointCloud2ConstPtr lidar;
 };
 
 class LatestFrameBuffer
