@@ -75,6 +75,7 @@ include_directories(
 
 add_executable(ros_yolo_node
   src/main.cpp
+  src/stereo_localizer.cpp
   src/yolo_node.cpp
   src/frustum_filter.cpp
   src/detector.cpp
@@ -108,6 +109,10 @@ set_target_properties(ros_yolo_node PROPERTIES
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_stereo_localizer tests/test_stereo_localizer.cpp src/stereo_localizer.cpp)
+  if(TARGET test_stereo_localizer)
+    target_link_libraries(test_stereo_localizer ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
+  endif()
   catkin_add_gtest(test_frustum_filter tests/test_frustum_filter.cpp src/frustum_filter.cpp)
   if(TARGET test_frustum_filter)
     target_link_libraries(test_frustum_filter ${catkin_LIBRARIES} ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})

@@ -20,6 +20,7 @@
 #include "ros_yolo/detector.h"
 #include "ros_yolo/latest_frame_buffer.h"
 #include "ros_yolo/yolo_utils.h"
+#include "ros_yolo/stereo_localizer.h"
 #include "lightglue/super_point.h"
 #include "lightglue/light_glue.h"
 #include "lightglue/utils.h"
@@ -36,12 +37,6 @@ private:
     static cv::Mat toBgrImage(const sensor_msgs::ImageConstPtr& msg);
     void loadCameraCalibration();
     void compute_H();
-    void compute_F();
-    void updateRectification(const cv::Size& imageSize);
-    void rectifyMatchedPoints(const std::vector<cv::Point2f>& pointsRgb,
-                              const std::vector<cv::Point2f>& pointsIr,
-                              std::vector<cv::Point2f>& rectifiedRgb,
-                              std::vector<cv::Point2f>& rectifiedIr) const;
     void syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
                            const sensor_msgs::ImageConstPtr& irMsg,
                            const sensor_msgs::PointCloud2ConstPtr& lidarMsg);
@@ -61,17 +56,6 @@ private:
     void publishCvImage(const cv::Mat& image, const ros::Time& stamp);
     void publishFilteredPointClouds(const std::vector<Detection>& detections,
                                     const sensor_msgs::PointCloud2ConstPtr& cloudMsg);
-    void correct_points(const cv::Matx33d& F,
-                        const std::vector<cv::KeyPoint>& points0,
-                        const std::vector<cv::KeyPoint>& points1,
-                        std::vector<cv::DMatch>& matches,
-                        double threshold = 3.0);
-    cv::Point2d normalize_pixel(const cv::Matx33d& K, const cv::Point2f& pt) const;
-    cv::Vec3d triangulate_svd(const cv::Matx34d& P1,
-                              const cv::Matx34d& P2,
-                              const cv::Point2d& ptn1,
-                              const cv::Point2d& ptn2) const;
-    cv::Point3f triangulate(const cv::Point2f& pt1, const cv::Point2f& pt2, int iters = 10) const;
 
 private:
     using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::PointCloud2>;
@@ -102,6 +86,7 @@ private:
     std::string config_path_;
     std::string model_dir_;
     std::unique_ptr<Configs> configs_;
+    std::unique_ptr<StereoLocalizer> stereoLocalizer_;
 
     cv::Matx33d kRgb_;
     cv::Matx33d kIr_;
@@ -118,19 +103,6 @@ private:
     cv::Matx33d rIrRgb_;
     cv::Vec3d tIrRgb_;
     cv::Matx33d H_;
-    cv::Matx33d F_;
-
-    cv::Matx33d kRgbTri_;
-    cv::Matx33d kIrTri_;
-    cv::Matx33d rTri_;
-    cv::Vec3d tTri_;
-
-    cv::Matx33d rRectRgb_ = cv::Matx33d::eye();
-    cv::Matx33d rRectIr_ = cv::Matx33d::eye();
-    cv::Matx34d pRectRgb_ = cv::Matx34d::zeros();
-    cv::Matx34d pRectIr_ = cv::Matx34d::zeros();
-    bool rectificationReady_{false};
-    cv::Size rectificationImageSize_;
 
     bool useGPU_{};
     bool showWindow_{};
