@@ -38,6 +38,8 @@ private:
     void loadCameraCalibration();
     void compute_H();
     void syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
+                           const sensor_msgs::ImageConstPtr& irMsg);
+    void syncImageLidarCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
                            const sensor_msgs::ImageConstPtr& irMsg,
                            const sensor_msgs::PointCloud2ConstPtr& lidarMsg);
     void processingLoop();
@@ -58,14 +60,16 @@ private:
                                     const sensor_msgs::PointCloud2ConstPtr& cloudMsg);
 
 private:
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::PointCloud2>;
+    using CameraSyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image>;
+    using CameraLidarSyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::PointCloud2>;
 
     ros::NodeHandle nh_;
     ros::NodeHandle pnh_;
     image_transport::ImageTransport it_;
     message_filters::Subscriber<sensor_msgs::Image> rgbSub_;
     message_filters::Subscriber<sensor_msgs::Image> irSub_;
-    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+    std::shared_ptr<message_filters::Synchronizer<CameraSyncPolicy>> cameraSync_;
+    std::shared_ptr<message_filters::Synchronizer<CameraLidarSyncPolicy>> cameraLidarSync_;
     image_transport::Publisher imagePub_;
     message_filters::Subscriber<sensor_msgs::PointCloud2> lidarSub_;
     ros::Publisher filteredPointCloudPub_;
@@ -107,6 +111,7 @@ private:
     bool useGPU_{};
     bool showWindow_{};
     bool triangulate_{};
+    bool cameraOnly_{};
 
     double confThreshold_{};
     double iouThreshold_{};

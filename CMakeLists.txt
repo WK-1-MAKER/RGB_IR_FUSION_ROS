@@ -25,6 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_filters
 )
 find_package(OpenCV 4 REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Threads REQUIRED)
@@ -58,7 +59,9 @@ endif()
 
 catkin_package(
   INCLUDE_DIRS include
+  LIBRARIES byte_tracker_3d
   CATKIN_DEPENDS roscpp sensor_msgs visualization_msgs std_msgs cv_bridge image_transport message_filters
+  DEPENDS OpenCV
 )
 
 include_directories(
@@ -72,6 +75,10 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/3rdparty/tensorrtbuffer/include
   /usr/include/eigen3
 )
+
+add_library(byte_tracker_3d src/byte_tracker_3d.cpp)
+target_include_directories(byte_tracker_3d PRIVATE ${EIGEN3_INCLUDE_DIRS})
+target_link_libraries(byte_tracker_3d ${OpenCV_LIBS})
 
 add_executable(ros_yolo_node
   src/main.cpp
@@ -109,6 +116,10 @@ set_target_properties(ros_yolo_node PROPERTIES
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_byte_tracker_3d tests/test_byte_tracker_3d.cpp)
+  if(TARGET test_byte_tracker_3d)
+    target_link_libraries(test_byte_tracker_3d byte_tracker_3d ${GTEST_MAIN_LIBRARIES})
+  endif()
   catkin_add_gtest(test_stereo_localizer tests/test_stereo_localizer.cpp src/stereo_localizer.cpp)
   if(TARGET test_stereo_localizer)
     target_link_libraries(test_stereo_localizer ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
@@ -129,6 +140,15 @@ endif()
 
 install(TARGETS ros_yolo_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(TARGETS byte_tracker_3d
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+)
+
+install(FILES include/ros_yolo/byte_tracker_3d.h
+  DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros_yolo
 )
 
 install(DIRECTORY launch/

@@ -70,6 +70,7 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     pnh_.param<bool>("use_gpu", useGPU_, true);
     pnh_.param<bool>("show_window", showWindow_, false);
     pnh_.param<bool>("triangulate", triangulate_, true);
+    pnh_.param<bool>("camera_only", cameraOnly_, false);
 
     pnh_.param<double>("conf_threshold", confThreshold_, 0.30);
     pnh_.param<double>("iou_threshold", iouThreshold_, 0.40);
@@ -96,8 +97,11 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 
     detector_ = std::make_unique<YoloDetector>(modelPath_, useGPU_, cv::Size(inputWidth, inputHeight));
     imagePub_ = it_.advertise(outputTopic_, 1);
-    filteredPointCloudPub_ = nh_.advertise<sensor_msgs::PointCloud2>(filteredPointCloudTopic_, 100);
-    frustumRaysPub_ = nh_.advertise<visualization_msgs::MarkerArray>("/fusion/frustum_rays", 1);
+    if (!cameraOnly_)
+    {
+        filteredPointCloudPub_ = nh_.advertise<sensor_msgs::PointCloud2>(filteredPointCloudTopic_, 100);
+        frustumRaysPub_ = nh_.advertise<visualization_msgs::MarkerArray>("/fusion/frustum_rays", 1);
+    }
 
     if (triangulate_)
     {
@@ -115,15 +119,30 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 
     rgbSub_.subscribe(nh_, rgbTopic_, 10);
     irSub_.subscribe(nh_, irTopic_, 10);
-    lidarSub_.subscribe(nh_, lidarTopic_, 10);
-    sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), rgbSub_, irSub_, lidarSub_);
-    sync_->setMaxIntervalDuration(ros::Duration(syncMaxInterval_));
-    sync_->registerCallback(boost::bind(&YoloNode::syncImageCallback, this, _1, _2, _3));
+    if (cameraOnly_)
+    {
+        cameraSync_ = std::make_shared<message_filters::Synchronizer<CameraSyncPolicy>>(
+            CameraSyncPolicy(10), rgbSub_, irSub_);
+        cameraSync_->setMaxIntervalDuration(ros::Duration(syncMaxInterval_));
+        cameraSync_->registerCallback(boost::bind(&YoloNode::syncImageCallback, this, _1, _2));
+    }
+    else
+    {
+        lidarSub_.subscribe(nh_, lidarTopic_, 10);
+        cameraLidarSync_ = std::make_shared<message_filters::Synchronizer<CameraLidarSyncPolicy>>(
+            CameraLidarSyncPolicy(10), rgbSub_, irSub_, lidarSub_);
+        cameraLidarSync_->setMaxIntervalDuration(ros::Duration(syncMaxInterval_));
+        cameraLidarSync_->registerCallback(boost::bind(&YoloNode::syncImageLidarCallback, this, _1, _2, _3));
+    }
     ROS_INFO_STREAM("ros_yolo subscribed RGB: " << rgbTopic_);
     ROS_INFO_STREAM("ros_yolo subscribed IR : " << irTopic_);
-    ROS_INFO_STREAM("ros_yolo subscribed cloud: " << lidarTopic_);
+    ROS_INFO_STREAM("ros_yolo camera_only: " << std::boolalpha << cameraOnly_);
+    if (!cameraOnly_)
+    {
+        ROS_INFO_STREAM("ros_yolo subscribed cloud: " << lidarTopic_);
+        ROS_INFO_STREAM("ros_yolo filtered cloud: " << filteredPointCloudTopic_);
+    }
     ROS_INFO_STREAM("ros_yolo output topic  : " << outputTopic_);
-    ROS_INFO_STREAM("ros_yolo filtered cloud: " << filteredPointCloudTopic_);
 
     // Start last so a constructor failure cannot leave a joinable thread behind.
     // ROS callbacks are not dispatched until main() enters ros::spin().
@@ -135,7 +154,8 @@ YoloNode::~YoloNode()
     rgbSub_.unsubscribe();
     irSub_.unsubscribe();
     lidarSub_.unsubscribe();
-    sync_.reset();
+    cameraSync_.reset();
+    cameraLidarSync_.reset();
     frameBuffer_.stop();
     if (processingThread_.joinable())
     {
@@ -239,6 +259,12 @@ void YoloNode::compute_H()
 }
 
 void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
+                                 const sensor_msgs::ImageConstPtr& irMsg)
+{
+    frameBuffer_.push(FramePair(rgbMsg, irMsg, sensor_msgs::PointCloud2ConstPtr()));
+}
+
+void YoloNode::syncImageLidarCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
                                  const sensor_msgs::ImageConstPtr& irMsg,
                                  const sensor_msgs::PointCloud2ConstPtr& lidarMsg)
 {

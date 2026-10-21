@@ -4,6 +4,8 @@
     <param name="use_gpu" value="true"/>
     <param name="show_window" value="true"/>
     <param name="triangulate" value="false"/>
+    <!-- true: RGB/IR 双路同步；false: RGB/IR/雷达三路同步。 -->
+    <param name="camera_only" value="true"/>
 
     <param name="model_path" value="$(find two_stream)/models/aifi-best-fp16.engine"/>
     <param name="class_names_path" value="$(find two_stream)/models/llvip.names"/>
@@ -15,7 +17,7 @@
     <param name="ir_topic" value="/pub_ir"/>
     <param name="lidar_topic" value="/fusion/points"/>
     <param name="filtered_point_cloud_topic" value="/fusion/points_filtered"/>
-    <!-- 三路消息最大时间戳跨度，单位：秒。 -->
+    <!-- 参与同步的双路或三路消息最大时间戳跨度，单位：秒。 -->
     <param name="sync_max_interval" value="0.1"/>
     <param name="output_topic" value="/two_stream/image_annotated"/>
 
