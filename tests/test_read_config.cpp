@@ -138,10 +138,10 @@ TEST(ReadConfigTest, PackageConfigContainsCameraCalibration)
     ASSERT_EQ(configs.camera_config.ir.intrinsic.size(), 9u);
     ASSERT_EQ(configs.camera_config.rgb.distortion.size(), 5u);
     ASSERT_EQ(configs.camera_config.ir.distortion.size(), 5u);
-    EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[0], 0.0);
-    EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[1], 0.0);
-    EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[2], 0.0);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[0], 0.036);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[1], -0.03);
-    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[2], 0.009);
+    EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[0], 0.124);
+    EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[1], 0.040);
+    EXPECT_DOUBLE_EQ(configs.camera_config.rgb.translation[2], -0.081);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[0], 0.009);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[1], -0.036);
+    EXPECT_DOUBLE_EQ(configs.camera_config.ir.translation[2], 0.03);
 }

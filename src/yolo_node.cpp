@@ -204,16 +204,23 @@ void YoloNode::loadCameraCalibration()
     distRgb_ = distortionFromVector(cameraConfig.rgb.distortion);
     distIr_ = distortionFromVector(cameraConfig.ir.distortion);
 
-    rBodyRgb_ = matx33FromVector(cameraConfig.rgb.rotation);
-    rBodyIr_ = matx33FromVector(cameraConfig.ir.rotation);
-    tBodyRgb_ = vec3FromVector(cameraConfig.rgb.translation);
-    tBodyIr_ = vec3FromVector(cameraConfig.ir.translation);
+    const CameraTransform rgbLidar(
+        matx33FromVector(cameraConfig.rgb.rotation),
+        vec3FromVector(cameraConfig.rgb.translation));
+    const CameraTransform irRgbCalibration(
+        matx33FromVector(cameraConfig.ir.rotation),
+        vec3FromVector(cameraConfig.ir.translation));
+    const BodyCameraTransforms bodyCameras =
+        bodyCameraTransformsFromRgbLidarAndIrRgb(rgbLidar, irRgbCalibration);
 
-    const CameraTransform bodyRgb(rBodyRgb_, tBodyRgb_);
-    const CameraTransform bodyIr(rBodyIr_, tBodyIr_);
-    const CameraTransform rgbBody = inverseTransform(bodyRgb);
-    const CameraTransform irBody = inverseTransform(bodyIr);
-    const CameraTransform irRgb = composeTransforms(irBody, bodyRgb);
+    rBodyRgb_ = bodyCameras.bodyRgb.rotation;
+    tBodyRgb_ = bodyCameras.bodyRgb.translation;
+    rBodyIr_ = bodyCameras.bodyIr.rotation;
+    tBodyIr_ = bodyCameras.bodyIr.translation;
+
+    const CameraTransform rgbBody = inverseTransform(bodyCameras.bodyRgb);
+    const CameraTransform irBody = inverseTransform(bodyCameras.bodyIr);
+    const CameraTransform irRgb = composeTransforms(irBody, bodyCameras.bodyRgb);
 
     rRgbBody_ = rgbBody.rotation;
     tRgbBody_ = rgbBody.translation;
@@ -247,7 +254,7 @@ cv::Mat YoloNode::toBgrImage(const sensor_msgs::ImageConstPtr& msg)
 
 void YoloNode::compute_H()
 {
-    const double refDepth = 3.0;
+    const double refDepth = 10.0;
     const cv::Vec3d n(0.0, 0.0, 1.0);
     const cv::Matx33d tOuter(
         tIrRgb_[0] * n[0], tIrRgb_[0] * n[1], tIrRgb_[0] * n[2],

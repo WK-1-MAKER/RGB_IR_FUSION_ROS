@@ -77,6 +77,43 @@ TEST(CameraGeometryTest, DerivesLegacyRgbToIrTransformFromTemporaryBodyCameraPos
     expectVecNear(irRgb.translation, cv::Vec3d(-0.036, 0.03, -0.009));
 }
 
+TEST(CameraGeometryTest, ConvertsRgbLidarAndIrRgbCalibrationToBodyCameraPoses)
+{
+    const cv::Matx33d rRgbLidar(0.0, -1.0, 0.0,
+                                1.0, 0.0, 0.0,
+                                0.0, 0.0, 1.0);
+    const cv::Vec3d tRgbLidar(1.0, 2.0, 3.0);
+    const cv::Matx33d rIrRgb(1.0, 0.0, 0.0,
+                             0.0, 0.0, -1.0,
+                             0.0, 1.0, 0.0);
+    const cv::Vec3d tIrRgb(-0.4, 0.5, 0.2);
+
+    const ros_yolo::BodyCameraTransforms bodyCameras =
+        ros_yolo::bodyCameraTransformsFromRgbLidarAndIrRgb(
+            ros_yolo::CameraTransform(rRgbLidar, tRgbLidar),
+            ros_yolo::CameraTransform(rIrRgb, tIrRgb));
+
+    expectMatNear(bodyCameras.bodyRgb.rotation,
+                  cv::Matx33d(0.0, 1.0, 0.0,
+                              -1.0, 0.0, 0.0,
+                              0.0, 0.0, 1.0));
+    expectVecNear(bodyCameras.bodyRgb.translation, cv::Vec3d(-2.0, 1.0, -3.0));
+    expectMatNear(bodyCameras.bodyIr.rotation,
+                  cv::Matx33d(0.0, 0.0, 1.0,
+                              -1.0, 0.0, 0.0,
+                              0.0, -1.0, 0.0));
+    expectVecNear(bodyCameras.bodyIr.translation, cv::Vec3d(-2.2, 0.6, -2.5));
+
+    const ros_yolo::CameraTransform rgbBody =
+        ros_yolo::inverseTransform(bodyCameras.bodyRgb);
+    const ros_yolo::CameraTransform irBody =
+        ros_yolo::inverseTransform(bodyCameras.bodyIr);
+    const ros_yolo::CameraTransform recoveredIrRgb =
+        ros_yolo::composeTransforms(irBody, bodyCameras.bodyRgb);
+    expectMatNear(recoveredIrRgb.rotation, rIrRgb);
+    expectVecNear(recoveredIrRgb.translation, tIrRgb);
+}
+
 TEST(CameraGeometryTest, TransformsPointIntoBodyFrame)
 {
     const ros_yolo::CameraTransform bodyRgb(cv::Matx33d::eye(), cv::Vec3d(0.1, -0.2, 0.3));

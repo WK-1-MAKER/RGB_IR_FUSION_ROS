@@ -28,24 +28,27 @@ superpoint_lightglue:
   engine_file: "superpoint_lightglue.engine"
   dla_core: -1
 
-# Camera extrinsics use world_to_camera:
-# X_body = R_body_camera * X_camera + t_body_camera
+# Camera extrinsics:
+# rgb.rotation/translation represent lidar(body) -> rgb:
+# X_rgb = R_rgb_lidar * X_lidar + t_rgb_lidar
+# ir.rotation/translation represent rgb -> ir:
+# X_ir = R_ir_rgb * X_rgb + t_ir_rgb
 cameras:
   rgb:
     intrinsic: [606.97900390625, 0.0, 320.3143615722656,
                 0.0, 607.1318359375, 247.97427368164062,
                 0.0, 0.0, 1.0]
     distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
-    rotation: [0.0, 0.0, 1.00776685918373,
-               -1.00220485067148, 0.0, 0.0,
-               0.0, 1.00908377211659, 0.0]
-    translation: [0.124, 0.040, -0.081]
+    rotation: [0.0, -0.9978, 0.0,
+               0.0, 0.0, -0.990998,
+               0.992293, 0.0, 0.0]
+    translation: [0.04, -0.08, -0.123]
   ir:
     intrinsic: [593.946114205786, 0.0, 322.242307522658,
                 0.0, 592.545920338569, 264.298408236226,
                 0.0, 0.0, 1.0]
     distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
-    rotation: [0.0, 0.0, 1.0,
-               -1.0, 0.0, 0.0,
-               0.0, -1.0, 0.0]
-    translation: [0.009, -0.036, 0.03]
+    rotation: [0.9999, 0.0124, 0.0117,
+               -0.0124, 0.9999, 0.0062,
+               -0.0116, -0.0064, 0.9999]
+    translation: [0.093, 0.04, 0.06]

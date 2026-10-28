@@ -22,6 +22,12 @@ struct CameraTransform
     cv::Vec3d translation;
 };
 
+struct BodyCameraTransforms
+{
+    CameraTransform bodyRgb;
+    CameraTransform bodyIr;
+};
+
 inline CameraTransform inverseTransform(const CameraTransform& transform)
 {
     const cv::Matx33d inverseRotation = transform.rotation.t();
@@ -32,6 +38,13 @@ inline CameraTransform composeTransforms(const CameraTransform& lhs, const Camer
 {
     return CameraTransform(lhs.rotation * rhs.rotation,
                            lhs.rotation * rhs.translation + lhs.translation);
+}
+
+inline BodyCameraTransforms bodyCameraTransformsFromRgbLidarAndIrRgb(
+    const CameraTransform& rgbLidar, const CameraTransform& irRgb)
+{
+    const CameraTransform lidarIr = composeTransforms(irRgb, rgbLidar);
+    return BodyCameraTransforms{inverseTransform(rgbLidar), inverseTransform(lidarIr)};
 }
 
 inline cv::Point3f transformPoint(const CameraTransform& transform, const cv::Point3f& point)
