@@ -34,7 +34,7 @@ catkin_make run_tests
 This is a ROS1 (catkin) C++14 package that fuses RGB and thermal (IR) image streams for object detection and 3D feature matching.
 
 **Pipeline:**
-1. `yolo_node.cpp` — ROS node that subscribes to synchronized RGB/IR image pairs (via `message_filters` ApproximateTime policy), orchestrates the pipeline, and publishes annotated output
+1. `yolo_node.cpp` — ROS node that caches independently subscribed RGB/IR/LiDAR messages, uses each Odometry message as a strict timestamp anchor for matching, and runs inference/tracking on one processing thread
 2. `detector.cpp` + `yolov8_decode.cpp` — YOLOv8 inference via ONNX Runtime GPU; decodes rank-3 output tensor, applies confidence thresholding and NMS
 3. `super_point.cpp` — TensorRT-accelerated SuperPoint feature extractor (keypoints + 258-dim descriptors); builds/deserializes `.engine` from `.onnx` on first run
 4. `light_glue.cpp` — TensorRT-accelerated LightGlue matcher; matches descriptors from RGB and IR views

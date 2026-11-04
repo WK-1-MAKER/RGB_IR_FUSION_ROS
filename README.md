@@ -51,10 +51,10 @@ TensorRT/CUDA 版本相关；如果 engine 无法在目标机器上反序列化�
 
 ## 检测框视锥体过滤点云
 
-节点在构造函数中通过 `sync_`（三路 `ApproximateTime`）同步 RGB、IR 和
-`PointCloud2`，同步回调将整组数据交给处理线程。检测结束后使用该组点云，
-处理期间收到的新消息不会替换当前点云；繁忙时仅保留最新一组待处理数据。
-三路话题都需要持续发布，且时间戳使用同一时间基准，否则不会触发检测。
+节点独立订阅 RGB、IR、Odometry 和（非 `camera_only` 模式下的）`PointCloud2`。
+每条 Odometry 消息触发一次处理：从各传感器缓存中按 `header.stamp` 选择最近帧，
+只有所有必需传感器都通过严格时间门限时才进入检测和跟踪。回调只缓存消息和排队
+Odometry；推理与跟踪在唯一处理线程中串行执行。
 
 启动文件提供以下私有参数：
 
@@ -62,7 +62,15 @@ TensorRT/CUDA 版本相关；如果 engine 无法在目标机器上反序列化�
 | --- | --- | --- |
 | `lidar_topic` | `/fusion/points` | 输入 `sensor_msgs/PointCloud2` |
 | `filtered_point_cloud_topic` | `/fusion/points_filtered` | 逐目标输出过滤点云 |
-| `sync_max_interval` | `0.1` | 同组 RGB、IR、LiDAR 最大时间戳跨度，单位秒 |
+| `odometry_topic` | `/Odometry` | 处理时间锚点，要求 `frame_id=camera_init` |
+| `camera_only` | `false` | 开启后只订阅 RGB、IR、Odometry |
+| `sync_queue_size` | `10` | 每路传感器缓存和 Odometry 队列容量 |
+
+传感器时间戳必须与 Odometry 使用相同时间基准。匹配门限为 RGB `<50 ms`、IR
+`<40 ms`、LiDAR `<20 ms`；差值等于门限也会拒绝。任一路无合格帧时跳过该
+Odometry 锚点并打印原因，成功匹配不打印同步日志。缓存不按时间清理，队列或缓存满时
+直接丢弃最旧消息，不打印溢出日志。跟踪时间和 LiDAR 位姿
+均使用该锚点的时间戳和 pose。
 
 检测框先从配准图像映射回已去畸变 RGB 图像，再用 RGB 内参反投影四角。
 对每条单位射线 `d_rgb`，使用配置中的 RGB 到 body 外参得到

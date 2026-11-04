@@ -23,7 +23,6 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   cv_bridge
   image_transport
-  message_filters
 )
 find_package(OpenCV 4 REQUIRED)
 find_package(PCL 1.10 REQUIRED COMPONENTS common search kdtree segmentation)
@@ -61,8 +60,8 @@ endif()
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES byte_tracker_3d lidar_localizer odometry_buffer
-  CATKIN_DEPENDS roscpp nav_msgs sensor_msgs visualization_msgs std_msgs cv_bridge image_transport message_filters
+  LIBRARIES byte_tracker_3d lidar_localizer
+  CATKIN_DEPENDS roscpp nav_msgs sensor_msgs visualization_msgs std_msgs cv_bridge image_transport
   DEPENDS OpenCV PCL
 )
 
@@ -88,9 +87,6 @@ target_link_libraries(byte_tracker_3d ${OpenCV_LIBS})
 add_library(lidar_localizer src/lidar_localizer.cpp)
 target_link_libraries(lidar_localizer ${PCL_LIBRARIES} ${OpenCV_LIBS})
 
-add_library(odometry_buffer src/odometry_buffer.cpp)
-target_link_libraries(odometry_buffer ${catkin_LIBRARIES} ${OpenCV_LIBS})
-
 add_executable(ros_yolo_node
   src/main.cpp
   src/stereo_localizer.cpp
@@ -110,7 +106,6 @@ target_link_libraries(ros_yolo_node
   ${catkin_LIBRARIES}
   byte_tracker_3d
   lidar_localizer
-  odometry_buffer
   Threads::Threads
   ${OpenCV_LIBS}
   ${ONNXRUNTIME_LIB}
@@ -138,7 +133,7 @@ install(TARGETS byte_tracker_3d
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
 
-install(TARGETS lidar_localizer odometry_buffer
+install(TARGETS lidar_localizer
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
@@ -149,7 +144,6 @@ install(FILES include/ros_yolo/byte_tracker_3d.h
 install(FILES
   include/ros_yolo/frustum_filter.h
   include/ros_yolo/lidar_localizer.h
-  include/ros_yolo/odometry_buffer.h
   DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros_yolo
 )
 

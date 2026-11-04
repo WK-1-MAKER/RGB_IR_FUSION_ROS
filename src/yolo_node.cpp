@@ -2,15 +2,18 @@
 #include "ros_yolo/frustum_filter.h"
 #include "ros_yolo/camera_geometry.h"
 
-#include <boost/bind.hpp>
 #include <visualization_msgs/MarkerArray.h>
+
+#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace ros_yolo
 {
@@ -50,6 +53,25 @@ cv::Mat distortionFromVector(const std::vector<double>& values)
 
 }  // namespace
 
+YoloNode::BodyPose YoloNode::poseFromOdometry(const nav_msgs::Odometry& message)
+{
+    const auto& p = message.pose.pose.position;
+    const auto& o = message.pose.pose.orientation;
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        !std::isfinite(o.x) || !std::isfinite(o.y) || !std::isfinite(o.z) || !std::isfinite(o.w))
+        throw std::invalid_argument("odometry pose contains a non-finite value");
+    Eigen::Quaterniond q(o.w, o.x, o.y, o.z);
+    if (!std::isfinite(q.norm()) || q.norm() <= 1e-12)
+        throw std::invalid_argument("odometry orientation has zero norm");
+    q.normalize();
+    const Eigen::Matrix3d matrix = q.toRotationMatrix();
+    BodyPose pose;
+    for (int row = 0; row < 3; ++row)
+        for (int col = 0; col < 3; ++col) pose.rotation(row, col) = matrix(row, col);
+    pose.translation = cv::Vec3d(p.x, p.y, p.z);
+    return pose;
+}
+
 YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     : nh_(nh), pnh_(pnh), it_(nh_)
 {
@@ -66,11 +88,11 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     pnh_.param<std::string>("cluster_bounding_boxes_topic",
                             clusterBoundingBoxesTopic_,
                             "/fusion/cluster_boxes");
-    pnh_.param<double>("sync_max_interval", syncMaxInterval_, 0.1);
-    if (!std::isfinite(syncMaxInterval_) || syncMaxInterval_ < 0.0)
-    {
-        throw std::runtime_error("sync_max_interval must be finite and nonnegative.");
-    }
+    int syncQueueSize = 10;
+    pnh_.param<int>("sync_queue_size", syncQueueSize, 10);
+    if (syncQueueSize < 1)
+        throw std::runtime_error("sync_queue_size must be positive.");
+    syncQueueSize_ = static_cast<std::size_t>(syncQueueSize);
 
     pnh_.param<bool>("use_gpu", useGPU_, true);
     pnh_.param<bool>("show_window", showWindow_, false);
@@ -82,14 +104,10 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     pnh_.param<double>("cluster_tolerance", clusterTolerance_, 0.5);
     pnh_.param<int>("cluster_min_size", clusterMinSize_, 3);
     pnh_.param<int>("cluster_max_size", clusterMaxSize_, 100000);
-    pnh_.param<double>("max_pose_age", maxPoseAge_, 0.1);
-    pnh_.param<double>("odometry_cache_duration", odometryCacheDuration_, 5.0);
     pnh_.param<double>("track_buffer_seconds", trackBufferSeconds_, 1.0);
     pnh_.param<double>("world_measurement_timeout_seconds", worldMeasurementTimeoutSeconds_, 1.0);
     if (!std::isfinite(clusterTolerance_) || clusterTolerance_ <= 0.0 ||
         clusterMinSize_ < 1 || clusterMaxSize_ < clusterMinSize_ ||
-        !std::isfinite(maxPoseAge_) || maxPoseAge_ <= 0.0 ||
-        !std::isfinite(odometryCacheDuration_) || odometryCacheDuration_ < maxPoseAge_ ||
         !std::isfinite(trackBufferSeconds_) || trackBufferSeconds_ <= 0.0 ||
         !std::isfinite(worldMeasurementTimeoutSeconds_) || worldMeasurementTimeoutSeconds_ <= 0.0)
     {
@@ -100,7 +118,6 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     clusterConfig.min_cluster_size = static_cast<std::size_t>(clusterMinSize_);
     clusterConfig.max_cluster_size = static_cast<std::size_t>(clusterMaxSize_);
     lidarLocalizer_ = std::make_unique<LidarLocalizer>(clusterConfig);
-    odometryBuffer_ = std::make_unique<OdometryBuffer>(maxPoseAge_, odometryCacheDuration_, "camera_init");
     ByteTrack3DConfig trackerConfig;
     trackerConfig.track_buffer_seconds = trackBufferSeconds_;
     trackerConfig.world_measurement_timeout_seconds = worldMeasurementTimeoutSeconds_;
@@ -150,24 +167,13 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
         }
     }
 
-    rgbSub_.subscribe(nh_, rgbTopic_, 10);
-    irSub_.subscribe(nh_, irTopic_, 10);
-    odometrySub_ = nh_.subscribe(odometryTopic_, 100, &YoloNode::odometryCallback, this);
-    if (cameraOnly_)
-    {
-        cameraSync_ = std::make_shared<message_filters::Synchronizer<CameraSyncPolicy>>(
-            CameraSyncPolicy(10), rgbSub_, irSub_);
-        cameraSync_->setMaxIntervalDuration(ros::Duration(syncMaxInterval_));
-        cameraSync_->registerCallback(boost::bind(&YoloNode::syncImageCallback, this, _1, _2));
-    }
-    else
-    {
-        lidarSub_.subscribe(nh_, lidarTopic_, 10);
-        cameraLidarSync_ = std::make_shared<message_filters::Synchronizer<CameraLidarSyncPolicy>>(
-            CameraLidarSyncPolicy(10), rgbSub_, irSub_, lidarSub_);
-        cameraLidarSync_->setMaxIntervalDuration(ros::Duration(syncMaxInterval_));
-        cameraLidarSync_->registerCallback(boost::bind(&YoloNode::syncImageLidarCallback, this, _1, _2, _3));
-    }
+    rgbSub_ = nh_.subscribe(rgbTopic_, static_cast<uint32_t>(syncQueueSize_), &YoloNode::rgbCallback, this);
+    irSub_ = nh_.subscribe(irTopic_, static_cast<uint32_t>(syncQueueSize_), &YoloNode::irCallback, this);
+    odometrySub_ = nh_.subscribe(odometryTopic_, static_cast<uint32_t>(syncQueueSize_),
+                                 &YoloNode::odometryCallback, this);
+    if (!cameraOnly_)
+        lidarSub_ = nh_.subscribe(lidarTopic_, static_cast<uint32_t>(syncQueueSize_),
+                                  &YoloNode::lidarCallback, this);
     ROS_INFO_STREAM("ros_yolo subscribed RGB: " << rgbTopic_);
     ROS_INFO_STREAM("ros_yolo subscribed IR : " << irTopic_);
     ROS_INFO_STREAM("ros_yolo camera_only: " << std::boolalpha << cameraOnly_);
@@ -179,20 +185,20 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     }
     ROS_INFO_STREAM("ros_yolo output topic  : " << outputTopic_);
 
-    // Start last so a constructor failure cannot leave a joinable thread behind.
-    // ROS callbacks are not dispatched until main() enters ros::spin().
     processingThread_ = std::thread(&YoloNode::processingLoop, this);
 }
 
 YoloNode::~YoloNode()
 {
-    rgbSub_.unsubscribe();
-    irSub_.unsubscribe();
-    lidarSub_.unsubscribe();
+    rgbSub_.shutdown();
+    irSub_.shutdown();
+    lidarSub_.shutdown();
     odometrySub_.shutdown();
-    cameraSync_.reset();
-    cameraLidarSync_.reset();
-    frameBuffer_.stop();
+    {
+        std::lock_guard<std::mutex> lock(inputMutex_);
+        stopping_ = true;
+    }
+    inputCondition_.notify_all();
     if (processingThread_.joinable())
     {
         processingThread_.join();
@@ -201,12 +207,123 @@ YoloNode::~YoloNode()
 
 void YoloNode::processingLoop()
 {
-    FramePair frame;
-    while (frameBuffer_.waitAndTake(frame))
+    while (true)
     {
+        nav_msgs::OdometryConstPtr anchor;
+        sensor_msgs::ImageConstPtr rgb;
+        sensor_msgs::ImageConstPtr ir;
+        sensor_msgs::PointCloud2ConstPtr lidar;
+        {
+            std::unique_lock<std::mutex> lock(inputMutex_);
+            inputCondition_.wait(lock, [this]() { return stopping_ || !odometryQueue_.empty(); });
+            if (stopping_) return;
+            const PendingOdometry pending = odometryQueue_.front();
+            odometryQueue_.pop_front();
+            const auto matchAfter = pending.receivedAt + std::chrono::milliseconds(90);
+            // Release the cache lock while waiting so sensor callbacks can keep filling it.
+            inputCondition_.wait_until(lock, matchAfter, [this]() { return stopping_; });
+            if (stopping_) return;
+            anchor = pending.message;
+
+            const auto nearestWithin = [](const auto& cache,
+                                          std::uint64_t referenceNanoseconds,
+                                          std::uint64_t maxDeltaNanoseconds) {
+                using MessagePtr = typename std::decay<decltype(cache.front())>::type;
+                MessagePtr best;
+                std::uint64_t bestDelta = std::numeric_limits<std::uint64_t>::max();
+                std::uint64_t bestNanoseconds = std::numeric_limits<std::uint64_t>::max();
+                for (const auto& candidate : cache)
+                {
+                    if (candidate->header.stamp.isZero()) continue;
+                    const std::uint64_t candidateNanoseconds = candidate->header.stamp.toNSec();
+                    const std::uint64_t delta = candidateNanoseconds >= referenceNanoseconds
+                        ? candidateNanoseconds - referenceNanoseconds
+                        : referenceNanoseconds - candidateNanoseconds;
+                    if (delta < bestDelta || (delta == bestDelta && candidateNanoseconds < bestNanoseconds))
+                    {
+                        best = candidate;
+                        bestDelta = delta;
+                        bestNanoseconds = candidateNanoseconds;
+                    }
+                }
+                return bestDelta < maxDeltaNanoseconds ? best : MessagePtr();
+            };
+            if (!anchor->header.stamp.isZero())
+            {
+                const std::uint64_t anchorNanoseconds = anchor->header.stamp.toNSec();
+                rgb = nearestWithin(rgbCache_, anchorNanoseconds, 50000000);
+                ir = nearestWithin(irCache_, anchorNanoseconds, 40000000);
+                if (!cameraOnly_)
+                {
+                    lidar = nearestWithin(lidarCache_, anchorNanoseconds, 10000000);
+                }
+            }
+        }
+
+        const ros::Time anchorStamp = anchor->header.stamp;
+        if (anchorStamp.isZero())
+        {
+            ROS_WARN("Skipping Odometry anchor with zero timestamp.");
+            continue;
+        }
+        if (!lastAnchorTimestamp_.isZero())
+        {
+            if (anchorStamp == lastAnchorTimestamp_)
+            {
+                ROS_WARN_STREAM("Skipping duplicate Odometry anchor " << anchorStamp << ".");
+                continue;
+            }
+            if (anchorStamp < lastAnchorTimestamp_)
+            {
+                tracker_->reset();
+                ROS_WARN("Odometry timestamp moved backward; starting a new tracking session.");
+            }
+        }
+        lastAnchorTimestamp_ = anchorStamp;
+        if (!rgb || !ir || (!cameraOnly_ && !lidar))
+        {
+            std::ostringstream reason;
+            reason << "Skipping Odometry anchor " << anchorStamp << ": no matching";
+            bool first = true;
+            if (!cameraOnly_ && !lidar)
+            {
+                reason << " LiDAR (< 10 ms from Odometry)";
+                first = false;
+            }
+            if (!rgb)
+            {
+                reason << (first ? " " : ", ") << "RGB (< 50 ms from Odometry)";
+                first = false;
+            }
+            if (!ir)
+            {
+                reason << (first ? " " : ", ") << "IR (< 40 ms from Odometry)";
+            }
+            reason << " message.";
+            ROS_WARN_STREAM(reason.str());
+            continue;
+        }
+        if (anchor->header.frame_id != "camera_init")
+        {
+            ROS_WARN_STREAM("Skipping Odometry anchor " << anchorStamp << ": frame_id is '"
+                            << anchor->header.frame_id << "', expected 'camera_init'.");
+            continue;
+        }
+
+        BodyPose worldFromBody;
         try
         {
-            processImagePair(frame.rgb, frame.ir, frame.lidar);
+            worldFromBody = poseFromOdometry(*anchor);
+        }
+        catch (const std::exception& e)
+        {
+            ROS_WARN_STREAM("Skipping Odometry anchor " << anchorStamp << ": invalid pose: " << e.what());
+            continue;
+        }
+
+        try
+        {
+            processImagePair(rgb, ir, lidar, anchorStamp, worldFromBody);
         }
         catch (const cv_bridge::Exception& e)
         {
@@ -218,7 +335,7 @@ void YoloNode::processingLoop()
         }
         catch (const std::exception& e)
         {
-            ROS_ERROR_STREAM("Frame processing failed: " << e.what());
+            ROS_ERROR_STREAM("Odometry anchor " << anchorStamp << " processing failed: " << e.what());
         }
         catch (...)
         {
@@ -301,30 +418,48 @@ void YoloNode::compute_H()
     // H_ maps RGB image coordinates into IR image coordinates for alignment.
 }
 
-void YoloNode::syncImageCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
-                                 const sensor_msgs::ImageConstPtr& irMsg)
+void YoloNode::rgbCallback(const sensor_msgs::ImageConstPtr& message)
 {
-    frameBuffer_.push(FramePair(rgbMsg, irMsg, sensor_msgs::PointCloud2ConstPtr()));
+    std::lock_guard<std::mutex> lock(inputMutex_);
+    rgbCache_.push_back(message);
+    if (rgbCache_.size() > syncQueueSize_)
+    {
+        rgbCache_.pop_front();
+    }
 }
 
-void YoloNode::syncImageLidarCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
-                                 const sensor_msgs::ImageConstPtr& irMsg,
-                                 const sensor_msgs::PointCloud2ConstPtr& lidarMsg)
+void YoloNode::irCallback(const sensor_msgs::ImageConstPtr& message)
 {
-    // 整组替换待处理帧，检测结束后仍使用本组点云。
-    frameBuffer_.push(FramePair(rgbMsg, irMsg, lidarMsg));
+    std::lock_guard<std::mutex> lock(inputMutex_);
+    irCache_.push_back(message);
+    if (irCache_.size() > syncQueueSize_)
+    {
+        irCache_.pop_front();
+    }
+}
+
+void YoloNode::lidarCallback(const sensor_msgs::PointCloud2ConstPtr& message)
+{
+    std::lock_guard<std::mutex> lock(inputMutex_);
+    lidarCache_.push_back(message);
+    if (lidarCache_.size() > syncQueueSize_)
+    {
+        lidarCache_.pop_front();
+    }
 }
 
 void YoloNode::odometryCallback(const nav_msgs::OdometryConstPtr& message)
 {
-    try
+    const auto receivedAt = std::chrono::steady_clock::now();
     {
-        odometryBuffer_->insert(*message);
+        std::lock_guard<std::mutex> lock(inputMutex_);
+        odometryQueue_.push_back(PendingOdometry{message, receivedAt});
+        if (odometryQueue_.size() > syncQueueSize_)
+        {
+            odometryQueue_.pop_front();
+        }
     }
-    catch (const std::exception& e)
-    {
-        ROS_WARN_STREAM_THROTTLE(2.0, "Ignoring invalid odometry: " << e.what());
-    }
+    inputCondition_.notify_one();
 }
 
 BatchedPointCloudResult YoloNode::filterAndPublishPointClouds(
@@ -408,43 +543,10 @@ BatchedPointCloudResult YoloNode::filterAndPublishPointClouds(
 
 void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
                                 const sensor_msgs::ImageConstPtr& irMsg,
-                                const sensor_msgs::PointCloud2ConstPtr& lidarMsg)
+                                const sensor_msgs::PointCloud2ConstPtr& lidarMsg,
+                                const ros::Time& frameStamp,
+                                const BodyPose& worldFromBody)
 {
-    const ros::Time frameStamp = lidarMsg ? lidarMsg->header.stamp : rgbMsg->header.stamp;
-    if (frameStamp.isZero())
-    {
-        ROS_WARN_THROTTLE(2.0, "Skipping synchronized group with a zero sensor timestamp.");
-        return;
-    }
-    constexpr double odometryWaitTimeoutSeconds = 0.1;
-    BodyPose worldFromBody;
-    if (lidarMsg && !odometryBuffer_->lookup(frameStamp, worldFromBody, odometryWaitTimeoutSeconds))
-    {
-        ROS_ERROR_STREAM("No odometry pose for cloud timestamp " << frameStamp
-                         << "; skipping frame and tracker update.");
-        return;
-    }
-    if (odometryBuffer_ && odometryBuffer_->generation() != odometryGeneration_)
-    {
-        tracker_->reset();
-        lastProcessedTimestamp_ = ros::Time();
-        odometryGeneration_ = odometryBuffer_->generation();
-    }
-    if (!lastProcessedTimestamp_.isZero())
-    {
-        if (frameStamp == lastProcessedTimestamp_)
-        {
-            ROS_WARN_THROTTLE(2.0, "Skipping synchronized group with a duplicate sensor timestamp.");
-            return;
-        }
-        if (frameStamp < lastProcessedTimestamp_)
-        {
-            tracker_->reset();
-            lastProcessedTimestamp_ = ros::Time();
-            ROS_WARN("Sensor timestamp moved backward; starting a new tracking session.");
-        }
-    }
-
     cv::Mat rgbImage = toBgrImage(rgbMsg);
     cv::Mat irImage = toBgrImage(irMsg);
 
@@ -466,15 +568,6 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
     cv::undistort(irImage, irUndistorted, cv::Mat(kIr_), distIr_, cv::Mat(kIr_));
     rgbImage = rgbUndistorted;
     irImage = irUndistorted;
-
-    const double stampDeltaSec = std::abs((rgbMsg->header.stamp - irMsg->header.stamp).toSec());
-    //std::cout << "RGB-IR timestamp delta: " << stampDeltaSec * 1000.0 << " ms" << std::endl;
-    if (stampDeltaSec > 0.03)
-    {
-        ROS_WARN_STREAM_THROTTLE(1.0,
-                                 "RGB/IR stamp delta " << stampDeltaSec * 1000.0
-                                                       << " ms exceeds 30 ms, continue inference.");
-    }
 
     cv::Mat rgbAligned;  //配准后的RGB图像
     cv::warpPerspective(rgbImage,
@@ -597,7 +690,6 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
         }
     }
     if (hasTrackedTargets) ROS_INFO_STREAM(trackLog.str());
-    lastProcessedTimestamp_ = frameStamp;
     publishClusterBoundingBoxes(worldBounds, validWorldBounds, trackAnnotations, frameStamp);
 
     std::vector<cv::Point3f> perDetectionWeightedPoints(
