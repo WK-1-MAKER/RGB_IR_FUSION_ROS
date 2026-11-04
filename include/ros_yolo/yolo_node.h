@@ -5,6 +5,7 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
+#include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -19,6 +20,10 @@
 
 #include "ros_yolo/detector.h"
 #include "ros_yolo/latest_frame_buffer.h"
+#include "ros_yolo/byte_tracker_3d.h"
+#include "ros_yolo/frustum_filter.h"
+#include "ros_yolo/lidar_localizer.h"
+#include "ros_yolo/odometry_buffer.h"
 #include "ros_yolo/yolo_utils.h"
 #include "ros_yolo/stereo_localizer.h"
 #include "lightglue/super_point.h"
@@ -42,6 +47,7 @@ private:
     void syncImageLidarCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
                            const sensor_msgs::ImageConstPtr& irMsg,
                            const sensor_msgs::PointCloud2ConstPtr& lidarMsg);
+    void odometryCallback(const nav_msgs::OdometryConstPtr& message);
     void processingLoop();
     void processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
                           const sensor_msgs::ImageConstPtr& irMsg,
@@ -56,8 +62,15 @@ private:
                                     Eigen::Matrix<double, 258, Eigen::Dynamic>& filteredFeatures,
                                     Eigen::Matrix<double, 1, Eigen::Dynamic>& filteredScores) const;
     void publishCvImage(const cv::Mat& image, const ros::Time& stamp);
-    void publishFilteredPointClouds(const std::vector<Detection>& detections,
-                                    const sensor_msgs::PointCloud2ConstPtr& cloudMsg);
+    void publishClusterBoundingBoxes(const std::vector<AxisAlignedBounds>& bounds,
+                                     const std::vector<bool>& valid,
+                                     const std::vector<TrackAnnotation>& tracks,
+                                     const ros::Time& stamp);
+    BatchedPointCloudResult filterAndPublishPointClouds(
+        const std::vector<Detection>& detections,
+        const sensor_msgs::PointCloud2ConstPtr& cloudMsg,
+        const BodyPose& worldFromBody,
+        std::vector<BodyFrustum>& frustums);
 
 private:
     using CameraSyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image>;
@@ -74,6 +87,8 @@ private:
     message_filters::Subscriber<sensor_msgs::PointCloud2> lidarSub_;
     ros::Publisher filteredPointCloudPub_;
     ros::Publisher frustumRaysPub_;  // 临时 RViz 可视化。
+    ros::Publisher clusterBoundingBoxesPub_;
+    ros::Subscriber odometrySub_;
     LatestFrameBuffer frameBuffer_;
     std::thread processingThread_;
 
@@ -87,10 +102,24 @@ private:
     std::string outputTopic_;
     std::string lidarTopic_;
     std::string filteredPointCloudTopic_;
+    std::string clusterBoundingBoxesTopic_;
     std::string config_path_;
     std::string model_dir_;
     std::unique_ptr<Configs> configs_;
     std::unique_ptr<StereoLocalizer> stereoLocalizer_;
+    std::unique_ptr<BYTETracker3D> tracker_;
+    std::unique_ptr<OdometryBuffer> odometryBuffer_;
+    std::unique_ptr<LidarLocalizer> lidarLocalizer_;
+    double clusterTolerance_{};
+    int clusterMinSize_{};
+    int clusterMaxSize_{};
+    double maxPoseAge_{};
+    double odometryCacheDuration_{};
+    double trackBufferSeconds_{};
+    double worldMeasurementTimeoutSeconds_{};
+    std::string odometryTopic_;
+    ros::Time lastProcessedTimestamp_;
+    std::size_t odometryGeneration_{};
 
     cv::Matx33d kRgb_;
     cv::Matx33d kIr_;

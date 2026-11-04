@@ -28,11 +28,6 @@ struct WorldFilter
 {
     explicit WorldFilter(const ByteTrack3DConfig& c)
     {
-        motion.setIdentity();
-        motion(0, 2) = motion(1, 3) = 1.0;
-        const Eigen::Matrix<double, 4, 2> acceleration =
-            (Eigen::Matrix<double, 4, 2>() << 0.5, 0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 1.0).finished();
-        process_noise = c.acceleration_std * c.acceleration_std * (acceleration * acceleration.transpose());
         measurement_noise = c.measurement_std * c.measurement_std * Mat2::Identity();
         initial_covariance.setZero();
         initial_covariance.diagonal() << c.measurement_std * c.measurement_std,
@@ -40,8 +35,23 @@ struct WorldFilter
             c.initial_velocity_std * c.initial_velocity_std;
     }
 
-    Mat4 motion;
-    Mat4 process_noise;
+    Mat4 motionFor(double dt) const
+    {
+        Mat4 result = Mat4::Identity();
+        result(0, 2) = result(1, 3) = dt;
+        return result;
+    }
+
+    Mat4 processNoiseFor(double dt, double accelerationStd) const
+    {
+        const Eigen::Matrix<double, 4, 2> acceleration =
+            (Eigen::Matrix<double, 4, 2>() << 0.5 * dt * dt, 0.0,
+                                               0.0, 0.5 * dt * dt,
+                                               dt, 0.0,
+                                               0.0, dt).finished();
+        return accelerationStd * accelerationStd * (acceleration * acceleration.transpose());
+    }
+
     Mat2 measurement_noise;
     Mat4 initial_covariance;
 };
@@ -69,7 +79,7 @@ struct Track
         return {box.x + box.width * 0.5, box.y + box.height * 0.5, box.width / box.height, box.height};
     }
 
-    void updateWorld(const Track& detection, const WorldFilter& filter, int frame)
+    void updateWorld(const Track& detection, const WorldFilter& filter, int frame, double now)
     {
         if (!detection.has_world_observation) return;
         if (!world_initialized)
@@ -92,9 +102,11 @@ struct Track
             world_covariance = ((world_covariance + world_covariance.transpose()) * 0.5).eval();
         }
         world_frame = frame;
+        world_time = now;
     }
 
-    void activate(int new_id, int frame, const WorldFilter& filter)
+    void activate(int new_id, int frame, double now, const ByteTrack3DConfig& config,
+                  const WorldFilter& filter)
     {
         id = new_id;
         mean.head<4>() = measurement();
@@ -102,43 +114,54 @@ struct Track
         Vec8 noise;
         const double height = box.height;
         noise << height / 10.0, height / 10.0, 1e-2, height / 10.0,
-            height / 16.0, height / 16.0, 1e-5, height / 16.0;
+            height * config.initial_image_velocity_scale, height * config.initial_image_velocity_scale,
+            config.aspect_acceleration_std, height * config.initial_image_velocity_scale;
         covariance = noise.cwiseProduct(noise).asDiagonal();
         image_initialized = true;
         state = State::Tracked;
         activated = frame == 1;
         frame_id = start_frame = frame;
-        updateWorld(*this, filter, frame);
+        last_update_time = now;
+        updateWorld(*this, filter, frame, now);
     }
 
-    void predictImage()
+    void predictImage(double dt, const ByteTrack3DConfig& config)
     {
         if (state != State::Tracked) mean(7) = 0.0;
         Mat8 motion = Mat8::Identity();
-        for (int i = 0; i < 4; ++i) motion(i, i + 4) = 1.0;
-        Vec8 noise;
+        for (int i = 0; i < 4; ++i) motion(i, i + 4) = dt;
         const double height = mean(3);
-        noise << height / 20.0, height / 20.0, 1e-2, height / 20.0,
-            height / 160.0, height / 160.0, 1e-5, height / 160.0;
         mean = (motion * mean).eval();
         covariance = (motion * covariance * motion.transpose()).eval();
-        covariance.diagonal() += noise.cwiseProduct(noise);
+        Mat8 processNoise = Mat8::Zero();
+        for (int i = 0; i < 4; ++i)
+        {
+            const double scale = i == 2 ? config.aspect_acceleration_std
+                                         : config.image_acceleration_std * std::max(height, 1.0);
+            const double spectralDensity = scale * scale;
+            processNoise(i, i) = spectralDensity * dt * dt * dt / 3.0;
+            processNoise(i, i + 4) = processNoise(i + 4, i) = spectralDensity * dt * dt / 2.0;
+            processNoise(i + 4, i + 4) = spectralDensity * dt;
+        }
+        covariance += processNoise;
     }
 
-    void predictWorld(const WorldFilter& filter, int frame, int buffer)
+    void predictWorld(const WorldFilter& filter, double now, double timeout, double dt, double accelerationStd)
     {
         if (!world_initialized) return;
-        if (frame - world_frame > buffer)
+        if (now - world_time > timeout)
         {
             world_initialized = false;
             world_frame = -1;
             return;
         }
-        world_mean = (filter.motion * world_mean).eval();
-        world_covariance = (filter.motion * world_covariance * filter.motion.transpose() + filter.process_noise).eval();
+        const Mat4 motion = filter.motionFor(dt);
+        world_mean = (motion * world_mean).eval();
+        world_covariance = (motion * world_covariance * motion.transpose() +
+                            filter.processNoiseFor(dt, accelerationStd)).eval();
     }
 
-    void update(const Track& detection, int frame, const WorldFilter& filter)
+    void update(const Track& detection, int frame, double now, const WorldFilter& filter)
     {
         const double height = mean(3);
         Vec4 noise;
@@ -153,10 +176,11 @@ struct Track
         state = State::Tracked;
         activated = true;
         frame_id = frame;
+        last_update_time = now;
         score = detection.score;
         class_id = detection.class_id;
         detection_index = detection.detection_index;
-        updateWorld(detection, filter, frame);
+        updateWorld(detection, filter, frame, now);
     }
 
     cv::Rect2d box;
@@ -167,6 +191,8 @@ struct Track
     int frame_id = 0;
     int start_frame = 0;
     int world_frame = -1;
+    double world_time = -std::numeric_limits<double>::infinity();
+    double last_update_time = -std::numeric_limits<double>::infinity();
     int tracklet_len = 0;
     bool activated = false;
     State state = State::New;
@@ -289,11 +315,17 @@ void validateConfig(const ByteTrack3DConfig& config)
     const auto probability = [](double v) { return std::isfinite(v) && v >= 0.0 && v <= 1.0; };
     if (!positive(config.measurement_std) || !positive(config.acceleration_std) ||
         !positive(config.initial_velocity_std) || !positive(config.world_gate) ||
+        !positive(config.image_acceleration_std) || !positive(config.aspect_acceleration_std) ||
+        !positive(config.initial_image_velocity_scale) ||
         !probability(config.world_weight) || !probability(config.track_high_threshold) ||
         !probability(config.track_low_threshold) || config.track_low_threshold > config.track_high_threshold ||
         !probability(config.new_track_threshold) || !positive(config.match_threshold) ||
         config.match_threshold > 1.0 || config.track_buffer < 0)
         throw std::invalid_argument("invalid BYTETracker3D configuration");
+    if (config.track_buffer_seconds < -1.0 || config.world_measurement_timeout_seconds < -1.0 ||
+        (config.track_buffer_seconds >= 0.0 && !std::isfinite(config.track_buffer_seconds)) ||
+        (config.world_measurement_timeout_seconds >= 0.0 && !std::isfinite(config.world_measurement_timeout_seconds)))
+        throw std::invalid_argument("invalid BYTETracker3D expiry configuration");
 }
 }  // namespace
 
@@ -355,6 +387,7 @@ struct BYTETracker3D::Impl
     WorldFilter world_filter;
     int frame_id = 0;
     int next_id = 1;
+    double last_timestamp = -std::numeric_limits<double>::infinity();
     Tracks tracked, lost, removed;
     std::vector<int> removed_this_frame;
 };
@@ -375,6 +408,15 @@ BYTETracker3D::~BYTETracker3D() = default;
 
 std::vector<ByteTrack3DResult> BYTETracker3D::update(const std::vector<ByteTrack3DDetection>& input)
 {
+    const double timestamp = std::isfinite(impl_->last_timestamp) ? impl_->last_timestamp + 1.0 : 1.0;
+    return update(input, timestamp);
+}
+
+std::vector<ByteTrack3DResult> BYTETracker3D::update(
+    const std::vector<ByteTrack3DDetection>& input, double timestamp_seconds)
+{
+    if (!std::isfinite(timestamp_seconds) || timestamp_seconds <= 0.0)
+        throw std::invalid_argument("BYTETracker3D timestamp must be finite and positive");
     // Validate the complete frame before changing frame IDs, trajectories, or removal diagnostics.
     for (const auto& d : input)
         if (!std::isfinite(d.box.x) || !std::isfinite(d.box.y) || !std::isfinite(d.box.width) ||
@@ -382,8 +424,37 @@ std::vector<ByteTrack3DResult> BYTETracker3D::update(const std::vector<ByteTrack
             throw std::invalid_argument("invalid BYTETracker3D detection");
 
     auto& tracker = *impl_;
+    if (std::isfinite(tracker.last_timestamp) && timestamp_seconds <= tracker.last_timestamp)
+        throw std::invalid_argument("BYTETracker3D timestamps must increase strictly");
+    const double dt = std::isfinite(tracker.last_timestamp) ? timestamp_seconds - tracker.last_timestamp : 0.0;
     ++tracker.frame_id;
+    tracker.last_timestamp = timestamp_seconds;
     tracker.removed_this_frame.clear();
+    const double trackLifetime = tracker.config.track_buffer_seconds >= 0.0
+        ? tracker.config.track_buffer_seconds : static_cast<double>(tracker.config.track_buffer);
+    const double worldLifetime = tracker.config.world_measurement_timeout_seconds >= 0.0
+        ? tracker.config.world_measurement_timeout_seconds : trackLifetime;
+
+    Tracks newly_removed;
+    const auto removeExpired = [&](Tracks& tracks) {
+        tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [&](const TrackPtr& track) {
+            if (timestamp_seconds - track->last_update_time > trackLifetime)
+            {
+                track->state = State::Removed;
+                newly_removed.push_back(track);
+                return true;
+            }
+            if (track->world_initialized && timestamp_seconds - track->world_time > worldLifetime)
+            {
+                track->world_initialized = false;
+                track->world_frame = -1;
+            }
+            return false;
+        }), tracks.end());
+    };
+    removeExpired(tracker.tracked);
+    removeExpired(tracker.lost);
+
     Tracks high, low;
     for (std::size_t i = 0; i < input.size(); ++i)
     {
@@ -398,14 +469,15 @@ std::vector<ByteTrack3DResult> BYTETracker3D::update(const std::vector<ByteTrack
     Tracks unconfirmed, confirmed;
     for (const auto& track : tracker.tracked) (track->activated ? confirmed : unconfirmed).push_back(track);
     Tracks pool = join(confirmed, tracker.lost);
-    for (const auto& track : pool) track->predictImage();
+    for (const auto& track : pool) track->predictImage(dt, tracker.config);
     for (const auto& track : join(pool, unconfirmed))
-        track->predictWorld(tracker.world_filter, tracker.frame_id, tracker.config.track_buffer);
+        track->predictWorld(tracker.world_filter, timestamp_seconds, worldLifetime, dt,
+                            tracker.config.acceleration_std);
 
-    Tracks activated, refound, newly_lost, newly_removed;
+    Tracks activated, refound, newly_lost;
     const auto apply_match = [&](const TrackPtr& track, const TrackPtr& detection) {
         const bool was_tracked = track->state == State::Tracked;
-        track->update(*detection, tracker.frame_id, tracker.world_filter);
+        track->update(*detection, tracker.frame_id, timestamp_seconds, tracker.world_filter);
         (was_tracked ? activated : refound).push_back(track);
     };
 
@@ -441,18 +513,10 @@ std::vector<ByteTrack3DResult> BYTETracker3D::update(const std::vector<ByteTrack
     {
         auto& track = remaining_high[i];
         if (track->score < tracker.config.new_track_threshold) continue;
-        track->activate(tracker.next_id++, tracker.frame_id, tracker.world_filter);
+        track->activate(tracker.next_id++, tracker.frame_id, timestamp_seconds,
+                        tracker.config, tracker.world_filter);
         activated.push_back(track);
     }
-
-    // Reference timing: expire the previous lost pool after association. Objects
-    // recovered above have already refreshed frame_id through their shared identity.
-    for (const auto& track : tracker.lost)
-        if (tracker.frame_id - track->frame_id > tracker.config.track_buffer)
-        {
-            track->state = State::Removed;
-            newly_removed.push_back(track);
-        }
 
     tracker.tracked.erase(std::remove_if(tracker.tracked.begin(), tracker.tracked.end(),
                                         [](const TrackPtr& t) { return t->state != State::Tracked; }),
@@ -460,8 +524,6 @@ std::vector<ByteTrack3DResult> BYTETracker3D::update(const std::vector<ByteTrack
     tracker.tracked = join(join(tracker.tracked, activated), refound);
     tracker.lost = subtract(tracker.lost, tracker.tracked);
     tracker.lost.insert(tracker.lost.end(), newly_lost.begin(), newly_lost.end());
-    // As in Python, newly removed tracks leave lost one update later.
-    tracker.lost = subtract(tracker.lost, tracker.removed);
     tracker.deduplicate();
     for (const auto& track : newly_removed) tracker.removed_this_frame.push_back(track->id);
     tracker.removed.insert(tracker.removed.end(), newly_removed.begin(), newly_removed.end());
@@ -470,14 +532,18 @@ std::vector<ByteTrack3DResult> BYTETracker3D::update(const std::vector<ByteTrack
     std::vector<ByteTrack3DResult> output;
     for (const auto& track : tracker.tracked)
     {
-        if (!track->activated) continue;
+        if (!track->activated && !tracker.config.return_unconfirmed_tracks) continue;
         ByteTrack3DResult result;
         result.box = track->currentBox();
         result.track_id = track->id;
         result.score = track->score;
         result.class_id = track->class_id;
         result.detection_index = track->detection_index;
-        if (track->world_initialized) result.position = {track->world_mean(0), track->world_mean(1)};
+        if (track->world_initialized)
+        {
+            result.position = {track->world_mean(0), track->world_mean(1)};
+            result.velocity = {track->world_mean(2), track->world_mean(3)};
+        }
         output.push_back(result);
     }
     return output;
@@ -491,6 +557,7 @@ void BYTETracker3D::reset()
     impl_->removed_this_frame.clear();
     impl_->frame_id = 0;
     impl_->next_id = 1;
+    impl_->last_timestamp = -std::numeric_limits<double>::infinity();
 }
 
 int BYTETracker3D::frameId() const { return impl_->frame_id; }

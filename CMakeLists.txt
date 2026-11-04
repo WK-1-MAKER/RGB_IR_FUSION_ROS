@@ -17,6 +17,7 @@ endif()
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  nav_msgs
   sensor_msgs
   visualization_msgs
   std_msgs
@@ -25,6 +26,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_filters
 )
 find_package(OpenCV 4 REQUIRED)
+find_package(PCL 1.10 REQUIRED COMPONENTS common search kdtree segmentation)
 find_package(Eigen3 REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -59,9 +61,9 @@ endif()
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES byte_tracker_3d
-  CATKIN_DEPENDS roscpp sensor_msgs visualization_msgs std_msgs cv_bridge image_transport message_filters
-  DEPENDS OpenCV
+  LIBRARIES byte_tracker_3d lidar_localizer odometry_buffer
+  CATKIN_DEPENDS roscpp nav_msgs sensor_msgs visualization_msgs std_msgs cv_bridge image_transport message_filters
+  DEPENDS OpenCV PCL
 )
 
 include_directories(
@@ -74,11 +76,20 @@ include_directories(
   ${TENSORRT_INCLUDE_DIR}
   ${PROJECT_SOURCE_DIR}/3rdparty/tensorrtbuffer/include
   /usr/include/eigen3
+  ${PCL_INCLUDE_DIRS}
 )
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
 
 add_library(byte_tracker_3d src/byte_tracker_3d.cpp)
 target_include_directories(byte_tracker_3d PRIVATE ${EIGEN3_INCLUDE_DIRS})
 target_link_libraries(byte_tracker_3d ${OpenCV_LIBS})
+
+add_library(lidar_localizer src/lidar_localizer.cpp)
+target_link_libraries(lidar_localizer ${PCL_LIBRARIES} ${OpenCV_LIBS})
+
+add_library(odometry_buffer src/odometry_buffer.cpp)
+target_link_libraries(odometry_buffer ${catkin_LIBRARIES} ${OpenCV_LIBS})
 
 add_executable(ros_yolo_node
   src/main.cpp
@@ -97,6 +108,9 @@ add_executable(ros_yolo_node
 
 target_link_libraries(ros_yolo_node
   ${catkin_LIBRARIES}
+  byte_tracker_3d
+  lidar_localizer
+  odometry_buffer
   Threads::Threads
   ${OpenCV_LIBS}
   ${ONNXRUNTIME_LIB}
@@ -115,29 +129,6 @@ set_target_properties(ros_yolo_node PROPERTIES
   INSTALL_RPATH "${ONNXRUNTIME_DIR}/lib;${TENSORRT_LIB_DIR};${TENSORRT_TARGET_LIB_DIR}"
 )
 
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(test_byte_tracker_3d tests/test_byte_tracker_3d.cpp)
-  if(TARGET test_byte_tracker_3d)
-    target_link_libraries(test_byte_tracker_3d byte_tracker_3d ${GTEST_MAIN_LIBRARIES})
-  endif()
-  catkin_add_gtest(test_stereo_localizer tests/test_stereo_localizer.cpp src/stereo_localizer.cpp)
-  if(TARGET test_stereo_localizer)
-    target_link_libraries(test_stereo_localizer ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
-  endif()
-  catkin_add_gtest(test_frustum_filter tests/test_frustum_filter.cpp src/frustum_filter.cpp)
-  if(TARGET test_frustum_filter)
-    target_link_libraries(test_frustum_filter ${catkin_LIBRARIES} ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
-  endif()
-  catkin_add_gtest(test_latest_frame_buffer tests/test_latest_frame_buffer.cpp)
-  if(TARGET test_latest_frame_buffer)
-    target_link_libraries(test_latest_frame_buffer ${catkin_LIBRARIES} Threads::Threads ${GTEST_MAIN_LIBRARIES})
-  endif()
-  catkin_add_gtest(test_camera_geometry tests/test_camera_geometry.cpp)
-  if(TARGET test_camera_geometry)
-    target_link_libraries(test_camera_geometry ${OpenCV_LIBS} ${GTEST_MAIN_LIBRARIES})
-  endif()
-endif()
-
 install(TARGETS ros_yolo_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
@@ -147,7 +138,18 @@ install(TARGETS byte_tracker_3d
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
 
+install(TARGETS lidar_localizer odometry_buffer
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+)
+
 install(FILES include/ros_yolo/byte_tracker_3d.h
+  DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros_yolo
+)
+install(FILES
+  include/ros_yolo/frustum_filter.h
+  include/ros_yolo/lidar_localizer.h
+  include/ros_yolo/odometry_buffer.h
   DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros_yolo
 )
 

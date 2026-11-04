@@ -5,7 +5,7 @@
     <param name="show_window" value="true"/>
     <param name="triangulate" value="false"/>
     <!-- true: RGB/IR 双路同步；false: RGB/IR/雷达三路同步。 -->
-    <param name="camera_only" value="true"/>
+    <param name="camera_only" value="false"/>
 
     <param name="model_path" value="$(find two_stream)/models/best-fp16.engine"/>
     <param name="class_names_path" value="$(find two_stream)/models/llvip.names"/>
@@ -15,8 +15,11 @@
 
     <param name="rgb_topic" value="/camera/color/image_raw"/>
     <param name="ir_topic" value="/pub_ir"/>
-    <param name="lidar_topic" value="/fusion/points"/>
+    <param name="lidar_topic" value="/cloud_undistorted"/>
     <param name="filtered_point_cloud_topic" value="/fusion/points_filtered"/>
+    <!-- camera_init 下所选聚类簇的轴对齐包围盒及跟踪编号。 -->
+    <param name="cluster_bounding_boxes_topic" value="/fusion/cluster_boxes"/>
+    <param name="odometry_topic" value="/Odometry"/>
     <!-- 参与同步的双路或三路消息最大时间戳跨度，单位：秒。 -->
     <param name="sync_max_interval" value="0.1"/>
     <param name="output_topic" value="/two_stream/image_annotated"/>
@@ -25,5 +28,13 @@
     <param name="input_height" value="640"/>
     <param name="conf_threshold" value="0.30"/>
     <param name="iou_threshold" value="0.40"/>
+    <param name="cluster_tolerance" value="0.50"/>
+    <param name="cluster_min_size" value="3"/>
+    <param name="cluster_max_size" value="100000"/>
+    <!-- 最近里程计与点云的最大时间戳差，单位：秒。 -->
+    <param name="max_pose_age" value="0.10"/>
+    <param name="odometry_cache_duration" value="5.0"/>
+    <param name="track_buffer_seconds" value="3.0"/>
+    <param name="world_measurement_timeout_seconds" value="3.0"/>
   </node>
 </launch>

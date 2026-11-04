@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -58,9 +59,13 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     pnh_.param<std::string>("ir_topic", irTopic_, "/pub_ir");
     pnh_.param<std::string>("output_topic", outputTopic_, "/two_stream/image_annotated");
     pnh_.param<std::string>("lidar_topic", lidarTopic_, "/fusion/points");
+    pnh_.param<std::string>("odometry_topic", odometryTopic_, "/Odometry");
     pnh_.param<std::string>("filtered_point_cloud_topic",
                             filteredPointCloudTopic_,
                             "/fusion/points_filtered");
+    pnh_.param<std::string>("cluster_bounding_boxes_topic",
+                            clusterBoundingBoxesTopic_,
+                            "/fusion/cluster_boxes");
     pnh_.param<double>("sync_max_interval", syncMaxInterval_, 0.1);
     if (!std::isfinite(syncMaxInterval_) || syncMaxInterval_ < 0.0)
     {
@@ -74,6 +79,33 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 
     pnh_.param<double>("conf_threshold", confThreshold_, 0.30);
     pnh_.param<double>("iou_threshold", iouThreshold_, 0.40);
+    pnh_.param<double>("cluster_tolerance", clusterTolerance_, 0.5);
+    pnh_.param<int>("cluster_min_size", clusterMinSize_, 3);
+    pnh_.param<int>("cluster_max_size", clusterMaxSize_, 100000);
+    pnh_.param<double>("max_pose_age", maxPoseAge_, 0.1);
+    pnh_.param<double>("odometry_cache_duration", odometryCacheDuration_, 5.0);
+    pnh_.param<double>("track_buffer_seconds", trackBufferSeconds_, 1.0);
+    pnh_.param<double>("world_measurement_timeout_seconds", worldMeasurementTimeoutSeconds_, 1.0);
+    if (!std::isfinite(clusterTolerance_) || clusterTolerance_ <= 0.0 ||
+        clusterMinSize_ < 1 || clusterMaxSize_ < clusterMinSize_ ||
+        !std::isfinite(maxPoseAge_) || maxPoseAge_ <= 0.0 ||
+        !std::isfinite(odometryCacheDuration_) || odometryCacheDuration_ < maxPoseAge_ ||
+        !std::isfinite(trackBufferSeconds_) || trackBufferSeconds_ <= 0.0 ||
+        !std::isfinite(worldMeasurementTimeoutSeconds_) || worldMeasurementTimeoutSeconds_ <= 0.0)
+    {
+        throw std::runtime_error("invalid localization/tracking parameters");
+    }
+    EuclideanClusterConfig clusterConfig;
+    clusterConfig.cluster_tolerance = clusterTolerance_;
+    clusterConfig.min_cluster_size = static_cast<std::size_t>(clusterMinSize_);
+    clusterConfig.max_cluster_size = static_cast<std::size_t>(clusterMaxSize_);
+    lidarLocalizer_ = std::make_unique<LidarLocalizer>(clusterConfig);
+    odometryBuffer_ = std::make_unique<OdometryBuffer>(maxPoseAge_, odometryCacheDuration_, "camera_init");
+    ByteTrack3DConfig trackerConfig;
+    trackerConfig.track_buffer_seconds = trackBufferSeconds_;
+    trackerConfig.world_measurement_timeout_seconds = worldMeasurementTimeoutSeconds_;
+    trackerConfig.return_unconfirmed_tracks = true;
+    tracker_ = std::make_unique<BYTETracker3D>(trackerConfig);
 
     pnh_.param<std::string>("config_path", config_path_, "");
     pnh_.param<std::string>("model_dir", model_dir_, "");
@@ -101,6 +133,7 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     {
         filteredPointCloudPub_ = nh_.advertise<sensor_msgs::PointCloud2>(filteredPointCloudTopic_, 100);
         frustumRaysPub_ = nh_.advertise<visualization_msgs::MarkerArray>("/fusion/frustum_rays", 1);
+        clusterBoundingBoxesPub_ = nh_.advertise<visualization_msgs::MarkerArray>(clusterBoundingBoxesTopic_, 1);
     }
 
     if (triangulate_)
@@ -119,6 +152,7 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 
     rgbSub_.subscribe(nh_, rgbTopic_, 10);
     irSub_.subscribe(nh_, irTopic_, 10);
+    odometrySub_ = nh_.subscribe(odometryTopic_, 100, &YoloNode::odometryCallback, this);
     if (cameraOnly_)
     {
         cameraSync_ = std::make_shared<message_filters::Synchronizer<CameraSyncPolicy>>(
@@ -141,6 +175,7 @@ YoloNode::YoloNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     {
         ROS_INFO_STREAM("ros_yolo subscribed cloud: " << lidarTopic_);
         ROS_INFO_STREAM("ros_yolo filtered cloud: " << filteredPointCloudTopic_);
+        ROS_INFO_STREAM("ros_yolo cluster boxes: " << clusterBoundingBoxesTopic_ << " (camera_init)");
     }
     ROS_INFO_STREAM("ros_yolo output topic  : " << outputTopic_);
 
@@ -154,6 +189,7 @@ YoloNode::~YoloNode()
     rgbSub_.unsubscribe();
     irSub_.unsubscribe();
     lidarSub_.unsubscribe();
+    odometrySub_.shutdown();
     cameraSync_.reset();
     cameraLidarSync_.reset();
     frameBuffer_.stop();
@@ -279,31 +315,47 @@ void YoloNode::syncImageLidarCallback(const sensor_msgs::ImageConstPtr& rgbMsg,
     frameBuffer_.push(FramePair(rgbMsg, irMsg, lidarMsg));
 }
 
-void YoloNode::publishFilteredPointClouds(
-    const std::vector<Detection>& detections,
-    const sensor_msgs::PointCloud2ConstPtr& cloudMsg)
+void YoloNode::odometryCallback(const nav_msgs::OdometryConstPtr& message)
 {
-    if (!cloudMsg)
+    try
     {
-        return;
+        odometryBuffer_->insert(*message);
     }
+    catch (const std::exception& e)
+    {
+        ROS_WARN_STREAM_THROTTLE(2.0, "Ignoring invalid odometry: " << e.what());
+    }
+}
 
-    // 临时可视化：每帧清除旧射线，显示长度不影响无限远视锥体过滤。
+BatchedPointCloudResult YoloNode::filterAndPublishPointClouds(
+    const std::vector<Detection>& detections,
+    const sensor_msgs::PointCloud2ConstPtr& cloudMsg,
+    const BodyPose& worldFromBody,
+    std::vector<BodyFrustum>& frustums)
+{
+    frustums.resize(detections.size());
+    std::vector<bool> valid(detections.size(), false);
+    BatchedPointCloudResult empty;
+    empty.target_point_indices.resize(detections.size());
+    if (!cloudMsg) return empty;
+
+    // 射线在 camera_init 下显示；过滤仍使用 body 视锥体，显示长度不影响过滤范围。
     visualization_msgs::MarkerArray markers;
     visualization_msgs::Marker clear;
     clear.header = cloudMsg->header;
+    clear.header.frame_id = "camera_init";
     clear.action = visualization_msgs::Marker::DELETEALL;
     markers.markers.push_back(clear);
 
     try
     {
-        for (const Detection& detection : detections)
+        for (std::size_t i = 0; i < detections.size(); ++i)
         {
-            BodyFrustum frustum;
-            if (buildBodyFrustum(detection.box, kRgb_, rBodyRgb_, tBodyRgb_, frustum))
+            if (buildBodyFrustum(detections[i].box, kRgb_, rBodyRgb_, tBodyRgb_, frustums[i]))
             {
+                valid[i] = true;
                 visualization_msgs::Marker marker;
-                marker.header = cloudMsg->header;
+                marker.header = clear.header;
                 marker.ns = "frustum_rays";
                 marker.id = static_cast<int>(markers.markers.size() - 1);
                 marker.type = visualization_msgs::Marker::LINE_LIST;
@@ -313,13 +365,14 @@ void YoloNode::publishFilteredPointClouds(
                 marker.color.g = 1.0;
                 marker.color.a = 1.0;
                 marker.lifetime = ros::Duration(0);  // 暂停 rosbag 时保留，下一帧通过 DELETEALL 更新。
-                for (const auto& ray : frustum.rays)
+                const cv::Vec3d originWorld = worldFromBody.transform(frustums[i].origin);
+                for (const auto& ray : frustums[i].rays)
                 {
                     geometry_msgs::Point start, end;
-                    start.x = frustum.origin[0];
-                    start.y = frustum.origin[1];
-                    start.z = frustum.origin[2];
-                    const cv::Vec3d tip = frustum.origin + 30.0 * ray;
+                    start.x = originWorld[0];
+                    start.y = originWorld[1];
+                    start.z = originWorld[2];
+                    const cv::Vec3d tip = worldFromBody.transform(frustums[i].origin + 30.0 * ray);
                     end.x = tip[0];
                     end.y = tip[1];
                     end.z = tip[2];
@@ -327,21 +380,71 @@ void YoloNode::publishFilteredPointClouds(
                     marker.points.push_back(end);
                 }
                 markers.markers.push_back(marker);
-                filteredPointCloudPub_.publish(filterPointCloud(*cloudMsg, frustum));
             }
         }
     }
     catch (const std::exception& e)
     {
-        ROS_WARN_THROTTLE(2.0, "Cannot filter PointCloud2: %s", e.what());
+        ROS_WARN_STREAM_THROTTLE(2.0, "Cannot build body frustums: " << e.what());
     }
     frustumRaysPub_.publish(markers);
+
+    BatchedPointCloudResult result;
+    try
+    {
+        result = filterPointCloudBatch(*cloudMsg, frustums);
+        for (std::size_t i = 0; i < result.filtered_clouds.size(); ++i)
+        {
+            if (valid[i]) filteredPointCloudPub_.publish(result.filtered_clouds[i]);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        ROS_WARN_STREAM_THROTTLE(2.0, "Cannot filter PointCloud2: " << e.what());
+        result.target_point_indices.resize(detections.size());
+    }
+    return result;
 }
 
 void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
                                 const sensor_msgs::ImageConstPtr& irMsg,
                                 const sensor_msgs::PointCloud2ConstPtr& lidarMsg)
 {
+    const ros::Time frameStamp = lidarMsg ? lidarMsg->header.stamp : rgbMsg->header.stamp;
+    if (frameStamp.isZero())
+    {
+        ROS_WARN_THROTTLE(2.0, "Skipping synchronized group with a zero sensor timestamp.");
+        return;
+    }
+    constexpr double odometryWaitTimeoutSeconds = 0.1;
+    BodyPose worldFromBody;
+    if (lidarMsg && !odometryBuffer_->lookup(frameStamp, worldFromBody, odometryWaitTimeoutSeconds))
+    {
+        ROS_ERROR_STREAM("No odometry pose for cloud timestamp " << frameStamp
+                         << "; skipping frame and tracker update.");
+        return;
+    }
+    if (odometryBuffer_ && odometryBuffer_->generation() != odometryGeneration_)
+    {
+        tracker_->reset();
+        lastProcessedTimestamp_ = ros::Time();
+        odometryGeneration_ = odometryBuffer_->generation();
+    }
+    if (!lastProcessedTimestamp_.isZero())
+    {
+        if (frameStamp == lastProcessedTimestamp_)
+        {
+            ROS_WARN_THROTTLE(2.0, "Skipping synchronized group with a duplicate sensor timestamp.");
+            return;
+        }
+        if (frameStamp < lastProcessedTimestamp_)
+        {
+            tracker_->reset();
+            lastProcessedTimestamp_ = ros::Time();
+            ROS_WARN("Sensor timestamp moved backward; starting a new tracking session.");
+        }
+    }
+
     cv::Mat rgbImage = toBgrImage(rgbMsg);
     cv::Mat irImage = toBgrImage(irMsg);
 
@@ -413,7 +516,89 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
     // Detection包含类别ID，置信度，边界框坐标信息
     std::vector<Detection> detectionsOnRgb = remapDetectionsToOriginalRgb(detections, rgbImage.size());
 
-    publishFilteredPointClouds(detectionsOnRgb, lidarMsg);
+    std::vector<BodyFrustum> frustums;
+    const BatchedPointCloudResult pointCloud =
+        filterAndPublishPointClouds(detectionsOnRgb, lidarMsg, worldFromBody, frustums);
+
+    std::vector<ByteTrack3DDetection> trackerInput;
+    trackerInput.reserve(detectionsOnRgb.size());
+    std::vector<AxisAlignedBounds> worldBounds(detectionsOnRgb.size());
+    std::vector<bool> validWorldBounds(detectionsOnRgb.size(), false);
+    for (std::size_t i = 0; i < detectionsOnRgb.size(); ++i)
+    {
+        ByteTrack3DDetection detection;
+        detection.box = detectionsOnRgb[i].box;
+        detection.score = detectionsOnRgb[i].conf;
+        detection.class_id = detectionsOnRgb[i].classId;
+
+        if (lidarMsg && i < pointCloud.target_point_indices.size())
+        {
+            try
+            {
+                const auto localized = lidarLocalizer_->localize(pointCloud.candidate_points,
+                                                                  pointCloud.source_offsets,
+                                                                  pointCloud.target_point_indices[i]);
+                if (localized.valid)
+                {
+                    const cv::Vec3d world = worldFromBody.transform(localized.centroid_body);
+                    if (std::isfinite(world[0]) && std::isfinite(world[1]))
+                    {
+                        detection.position = cv::Point2d(world[0], world[1]);
+                        std::vector<cv::Vec3d> worldClusterPoints;
+                        worldClusterPoints.reserve(localized.cluster_point_indices.size());
+                        for (const std::size_t candidateIndex : localized.cluster_point_indices)
+                        {
+                            worldClusterPoints.push_back(worldFromBody.transform(pointCloud.candidate_points.at(candidateIndex)));
+                        }
+                        worldBounds[i] = axisAlignedBounds(worldClusterPoints);
+                        validWorldBounds[i] = true;
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                ROS_WARN_STREAM_THROTTLE(2.0, "LiDAR localization failed for detection " << i << ": " << e.what());
+            }
+        }
+        trackerInput.push_back(detection);
+    }
+    const auto tracked = tracker_->update(trackerInput, frameStamp.toSec());
+    std::vector<TrackAnnotation> trackAnnotations(detectionsOnRgb.size());
+    std::vector<const ByteTrack3DResult*> tracksByDetection(detectionsOnRgb.size(), nullptr);
+    for (const auto& track : tracked)
+    {
+        if (track.detection_index >= trackAnnotations.size()) continue;
+        tracksByDetection[track.detection_index] = &track;
+        auto& annotation = trackAnnotations[track.detection_index];
+        annotation.track_id = track.track_id;
+        annotation.world_position_valid = std::isfinite(track.position.x) && std::isfinite(track.position.y);
+        if (annotation.world_position_valid) annotation.world_position = track.position;
+    }
+    std::ostringstream trackLog;
+    trackLog << std::fixed << std::setprecision(3);
+    bool hasTrackedTargets = false;
+    for (std::size_t i = 0; i < tracksByDetection.size(); ++i)
+    {
+        const auto* track = tracksByDetection[i];
+        if (!track) continue;
+
+        if (hasTrackedTargets) trackLog << '\n';
+        trackLog << "id=" << track->track_id;
+        hasTrackedTargets = true;
+        if (std::isfinite(track->position.x) && std::isfinite(track->position.y) &&
+            std::isfinite(track->velocity.x) && std::isfinite(track->velocity.y))
+        {
+            trackLog << " X=" << track->position.x << " m Y=" << track->position.y
+                     << " m Vx=" << track->velocity.x << " m/s Vy=" << track->velocity.y << " m/s";
+        }
+        else
+        {
+            trackLog << " X=NA Y=NA Vx=NA Vy=NA";
+        }
+    }
+    if (hasTrackedTargets) ROS_INFO_STREAM(trackLog.str());
+    lastProcessedTimestamp_ = frameStamp;
+    publishClusterBoundingBoxes(worldBounds, validWorldBounds, trackAnnotations, frameStamp);
 
     std::vector<cv::Point3f> perDetectionWeightedPoints(
         detectionsOnRgb.size(),
@@ -561,7 +746,8 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
     //-------------------------------------------------------------
     }
 
-    utils::visualizeDetection(rgbImage, detectionsOnRgb, classNames_, perDetectionWeightedPoints);
+    utils::visualizeDetection(rgbImage, detectionsOnRgb, classNames_, perDetectionWeightedPoints,
+                              trackAnnotations);
     if (showWindow_)
     {
         cv::imshow("two_stream_annotated", rgbImage);
@@ -569,6 +755,82 @@ void YoloNode::processImagePair(const sensor_msgs::ImageConstPtr& rgbMsg,
     }
     publishCvImage(rgbImage, rgbMsg->header.stamp);
 
+}
+
+void YoloNode::publishClusterBoundingBoxes(const std::vector<AxisAlignedBounds>& bounds,
+                                           const std::vector<bool>& valid,
+                                           const std::vector<TrackAnnotation>& tracks,
+                                           const ros::Time& stamp)
+{
+    if (cameraOnly_) return;
+
+    visualization_msgs::MarkerArray markers;
+    visualization_msgs::Marker clear;
+    clear.header.stamp = stamp;
+    clear.header.frame_id = "camera_init";
+    clear.action = visualization_msgs::Marker::DELETEALL;
+    markers.markers.push_back(clear);
+
+    const std::size_t count = std::min(bounds.size(), std::min(valid.size(), tracks.size()));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (!valid[i]) continue;
+        const AxisAlignedBounds& box = bounds[i];
+        const cv::Vec3d center = (box.maximum + box.minimum) * 0.5;
+
+        visualization_msgs::Marker boxMarker;
+        boxMarker.header = clear.header;
+        boxMarker.ns = "cluster_boxes";
+        boxMarker.id = static_cast<int>(2 * i);
+        boxMarker.type = visualization_msgs::Marker::LINE_LIST;
+        boxMarker.action = visualization_msgs::Marker::ADD;
+        boxMarker.pose.orientation.w = 1.0;
+        boxMarker.scale.x = 0.02;  // Line width only; corner coordinates remain exact.
+        boxMarker.color.r = 0.1;
+        boxMarker.color.g = 0.55;
+        boxMarker.color.b = 1.0;
+        boxMarker.color.a = 1.0;
+        // Connect each corner to its three neighbours, emitting each edge once.
+        // Flat clusters retain their exact bounds without expanding the box.
+        for (int corner = 0; corner < 8; ++corner)
+        {
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                if (corner & (1 << axis)) continue;
+                for (const int endpoint : {corner, corner | (1 << axis)})
+                {
+                    geometry_msgs::Point point;
+                    point.x = (endpoint & 1) ? box.maximum[0] : box.minimum[0];
+                    point.y = (endpoint & 2) ? box.maximum[1] : box.minimum[1];
+                    point.z = (endpoint & 4) ? box.maximum[2] : box.minimum[2];
+                    boxMarker.points.push_back(point);
+                }
+            }
+        }
+        boxMarker.lifetime = ros::Duration(0);
+        markers.markers.push_back(boxMarker);
+
+        if (tracks[i].track_id <= 0) continue;
+        visualization_msgs::Marker label;
+        label.header = clear.header;
+        label.ns = "cluster_box_ids";
+        label.id = static_cast<int>(2 * i + 1);
+        label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+        label.action = visualization_msgs::Marker::ADD;
+        label.pose.position.x = center[0];
+        label.pose.position.y = center[1];
+        label.pose.position.z = box.maximum[2] + 0.25;
+        label.pose.orientation.w = 1.0;
+        label.scale.z = 0.3;
+        label.color.r = 1.0;
+        label.color.g = 1.0;
+        label.color.b = 1.0;
+        label.color.a = 1.0;
+        label.text = std::to_string(tracks[i].track_id);
+        label.lifetime = ros::Duration(0);
+        markers.markers.push_back(label);
+    }
+    clusterBoundingBoxesPub_.publish(markers);
 }
 
 std::vector<Detection> YoloNode::remapDetectionsToOriginalRgb(const std::vector<Detection>& detections,

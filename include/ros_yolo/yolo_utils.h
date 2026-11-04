@@ -15,6 +15,13 @@ struct Detection
     int classId{};
 };
 
+struct TrackAnnotation
+{
+    int track_id = 0;
+    bool world_position_valid = false;
+    cv::Point2d world_position;
+};
+
 namespace utils
 {
 size_t vectorProduct(const std::vector<int64_t>& vector);
@@ -24,7 +31,10 @@ std::vector<std::string> loadNames(const std::string& path);
 void visualizeDetection(cv::Mat& image,
                         const std::vector<Detection>& detections,
                         const std::vector<std::string>& classNames,
-                        const std::vector<cv::Point3f>& targetPoints3d = {});
+                        const std::vector<cv::Point3f>& targetPoints3d = {},
+                        const std::vector<TrackAnnotation>& tracks = {});
+
+std::string formatTrackLabel(const TrackAnnotation& track);
 
 void letterbox(const cv::Mat& image,
                cv::Mat& outImage,

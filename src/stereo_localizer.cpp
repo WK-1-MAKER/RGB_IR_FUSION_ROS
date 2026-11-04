@@ -335,7 +335,7 @@ void StereoLocalizer::updateRectification(const cv::Size& imageSize)
     cv::Matx33d rightKInv = rightK.inv(cv::DECOMP_SVD);
     cv::Matx33d rectifiedRotation = rightKInv * rightK;  //矫正后两个相机之间的旋转矩阵，理论上应该是单位矩阵，但实际计算中可能存在数值误差
     cv::Vec3d rectifiedT = rightKInv * rectifiedTranslation; //矫正后两个相机之间的平移向量，理论上应该是 [baseline, 0, 0]，但实际计算中可能存在数值误差
-    std::cout << rectifiedT << std::endl;
+    // std::cout << rectifiedT << std::endl;
 
     rRectRgb_ = cv::Matx33d(rRectRgb);
     rRectIr_ = cv::Matx33d(rRectIr);

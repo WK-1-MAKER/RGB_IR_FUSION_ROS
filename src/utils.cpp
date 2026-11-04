@@ -9,6 +9,20 @@ namespace ros_yolo
 {
 namespace utils
 {
+std::string formatTrackLabel(const TrackAnnotation& track)
+{
+    std::ostringstream stream;
+    if (track.track_id <= 0) return stream.str();
+    stream << track.track_id;
+    if (track.world_position_valid && std::isfinite(track.world_position.x) &&
+        std::isfinite(track.world_position.y))
+    {
+        stream << " | " << std::fixed << std::setprecision(2)
+               << "(" << track.world_position.x << ", " << track.world_position.y << ") m";
+    }
+    return stream.str();
+}
+
 size_t vectorProduct(const std::vector<int64_t>& vector)
 {
     if (vector.empty())
@@ -60,7 +74,8 @@ std::vector<std::string> loadNames(const std::string& path)
 void visualizeDetection(cv::Mat& image,
                         const std::vector<Detection>& detections,
                         const std::vector<std::string>& classNames,
-                        const std::vector<cv::Point3f>& targetPoints3d)
+                        const std::vector<cv::Point3f>& targetPoints3d,
+                        const std::vector<TrackAnnotation>& tracks)
 {
     for (size_t i = 0; i < detections.size(); ++i)
     {
@@ -111,22 +126,29 @@ void visualizeDetection(cv::Mat& image,
                             2);
             }
         }
-        topLabel += " " + std::to_string(conf) + "%";
+        if (i < tracks.size())
+        {
+            const std::string trackLabel = formatTrackLabel(tracks[i]);
+            if (!trackLabel.empty()) topLabel += " | " + trackLabel;
+        }
 
+        const double fontScale = 0.4;
+        const int textThickness = 1;
         int baseline = 0;
-        cv::Size size = cv::getTextSize(topLabel, cv::FONT_ITALIC, 0.8, 2, &baseline);
+        cv::Size size = cv::getTextSize(topLabel, cv::FONT_ITALIC, fontScale, textThickness, &baseline);
         cv::rectangle(image,
-                      cv::Point(x, std::max(0, y - 25)),
+                      cv::Point(x, std::max(0, y - size.height - baseline - 4)),
                       cv::Point(x + size.width, y),
                       cv::Scalar(229, 160, 21),
                       -1);
 
         cv::putText(image, topLabel,
-                    cv::Point(x, std::max(0, y - 3)),
+                    cv::Point(x, std::max(0, y - baseline - 2)),
                     cv::FONT_ITALIC,
-                    0.8,
+                    fontScale,
                     cv::Scalar(255, 255, 255),
-                    2);
+                    textThickness,
+                    cv::LINE_AA);
     }
 }
 
